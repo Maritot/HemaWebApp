@@ -1,0 +1,63 @@
+{
+  "nav": {
+    "home": "హోమ్ (Home)",
+    "expenses": "ఖర్చులు (Expenses)",
+    "debts": "అప్పులు (Debts)",
+    "gifts": "బహుమతులు (Gifts)",
+    "ai": "సహాయకుడు (AI)"
+  },
+  "settings": {
+    "title": "సెట్టింగ్‌లు (Settings)",
+    "subtitle": "ప్రాధాన్యతలు (Preferences)",
+    "language": "భాష (Language)",
+    "notifications": "నోటిఫికేషన్‌లు (Alerts)",
+    "privacy": "గోప్యత (Privacy)",
+    "export": "డేటా ఎగుమతి (Export)",
+    "logout": "సైన్ అవుట్ (Sign Out)"
+  },
+  "dashboard": {
+    "total_balance": "మొత్తం బ్యాలెన్స్ (Total Balance)",
+    "income": "ఆదాయం (Income)",
+    "expenses": "ఖర్చు (Expenses)",
+    "weekly_spend": "ఈ వారం ఖర్చు",
+    "recent_tx": "ఇటీవలి లావాదేవీలు",
+    "no_tx": "లావాదేవీలు లేవు. ఒకటి జోడించండి!"
+  },
+  "expenses": {
+    "title": "లావాదేవీని జోడించండి",
+    "expense_tab": "ఖర్చు",
+    "income_tab": "ఆదాయం",
+    "amount": "మొత్తం",
+    "what_for": "ఇది దేనికోసం?",
+    "what_for_ph": "ఉదా. కిరాణా, పాలు, కూరగాయలు",
+    "notes": "గమనికలు (ఐచ్ఛికం)",
+    "notes_ph": "గుర్తుంచుకోవడానికి వివరాలు...",
+    "save": "సేవ్ చేయండి",
+    "saved": "సేవ్ చేయబడింది!",
+    "categorized_as": "వర్గం:"
+  },
+  "gifts": {
+    "title": "బహుమతుల ఖాతా (Gift Ledger)",
+    "subtitle": "షగున్ & సంబంధాలు (Shagun)",
+    "all": "అన్ని బహుమతులు",
+    "given": "మేము ఇచ్చినవి",
+    "received": "మాకు వచ్చినవి"
+  },
+  "debts": {
+    "title": "అప్పులు (Debts)",
+    "subtitle": "అప్పులు & రుణాలు ట్రాక్ చేయండి",
+    "we_owe": "మేము ఇవ్వాల్సినవి",
+    "owed_to_us": "మాకు రావాల్సినవి",
+    "active": "యాక్టివ్ (Active)",
+    "settled": "చెల్లించినవి (Settled)",
+    "to_pay": "ఇవ్వాలి",
+    "to_collect": "రావాలి",
+    "overdue": "గడువు ముగిసింది (OVERDUE)",
+    "send_reminder": "రిమైండర్ పంపండి",
+    "draft_msg": "WhatsApp సందేశాన్ని డ్రాఫ్ట్ చేయండి:"
+  },
+  "assistant": {
+    "compliance": "గమనిక: Hema AI విద్యా సమాచారాన్ని మాత్రమే అందిస్తుంది. ఇది SEBI వద్ద రిజిస్టర్ కాలేదు.",
+    "placeholder": "నన్ను ఏదైనా అడగండి..."
+  }
+}

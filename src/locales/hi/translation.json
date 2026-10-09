@@ -1,0 +1,63 @@
+{
+  "nav": {
+    "home": "घर (Home)",
+    "expenses": "खर्च (Expenses)",
+    "debts": "उधार (Debts)",
+    "gifts": "उपहार (Gifts)",
+    "ai": "सहायक (AI)"
+  },
+  "settings": {
+    "title": "सेटिंग्स (Settings)",
+    "subtitle": "प्राथमिकताएं (Preferences)",
+    "language": "भाषा (Language)",
+    "notifications": "सूचनाएं (Alerts)",
+    "privacy": "गोपनीयता (Privacy)",
+    "export": "डेटा निर्यात (Export)",
+    "logout": "लॉग आउट (Sign Out)"
+  },
+  "dashboard": {
+    "total_balance": "कुल शेष (Total Balance)",
+    "income": "आय (Income)",
+    "expenses": "खर्च (Expenses)",
+    "weekly_spend": "इस सप्ताह का खर्च",
+    "recent_tx": "हालिया लेनदेन",
+    "no_tx": "कोई हालिया लेनदेन नहीं है। एक जोड़ें!"
+  },
+  "expenses": {
+    "title": "लेनदेन जोड़ें (Add)",
+    "expense_tab": "खर्च",
+    "income_tab": "आय",
+    "amount": "रकम",
+    "what_for": "यह किस लिए था?",
+    "what_for_ph": "उदा. किराना, दूध, सब्जी",
+    "notes": "विवरण (वैकल्पिक)",
+    "notes_ph": "कोई विवरण याद रखने के लिए...",
+    "save": "सहेजें",
+    "saved": "सहेजा गया!",
+    "categorized_as": "श्रेणी:"
+  },
+  "gifts": {
+    "title": "उपहार खाता (Gift Ledger)",
+    "subtitle": "शगुन और रिश्ते (Shagun)",
+    "all": "सभी उपहार",
+    "given": "हमने दिए",
+    "received": "हमें मिले"
+  },
+  "debts": {
+    "title": "उधार खाता (Debts)",
+    "subtitle": "उधार और लेन-देन ट्रैक करें",
+    "we_owe": "हमें देना है",
+    "owed_to_us": "हमें मिलना है",
+    "active": "सक्रिय (Active)",
+    "settled": "चुकाया गया (Settled)",
+    "to_pay": "देना है",
+    "to_collect": "लेना है",
+    "overdue": "अतिदेय (OVERDUE)",
+    "send_reminder": "याद दिलाएं",
+    "draft_msg": "व्हाट्सएप संदेश ड्राफ्ट करें:"
+  },
+  "assistant": {
+    "compliance": "अनुपालन सूचना: हेमा एआई केवल शैक्षिक जानकारी प्रदान करता है। यह SEBI पंजीकृत नहीं है।",
+    "placeholder": "मुझसे कुछ भी पूछें..."
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "nav": {
+    "home": "Home",
+    "expenses": "Expenses",
+    "debts": "Debts",
+    "gifts": "Gifts",
+    "ai": "AI"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Preferences & Account",
+    "language": "App Language",
+    "notifications": "Notifications & Alerts",
+    "privacy": "Privacy & Security",
+    "export": "Export Data (CSV)",
+    "logout": "Sign Out"
+  },
+  "dashboard": {
+    "total_balance": "Total Balance",
+    "income": "Income",
+    "expenses": "Expenses",
+    "weekly_spend": "This Week's Spend",
+    "recent_tx": "Recent Transactions",
+    "no_tx": "No recent transactions. Add one in Expenses!"
+  },
+  "expenses": {
+    "title": "Add Transaction",
+    "expense_tab": "Expense",
+    "income_tab": "Income",
+    "amount": "Amount",
+    "available_balance": "Available Balance",
+    "what_for": "What was this for?",
+    "what_for_ph": "e.g., Kiranam, Milk, Swiggy",
+    "income_source": "Source of Income",
+    "income_source_ph": "e.g., Salary, Pension, Rent",
+    "notes": "Notes (Optional)",
+    "notes_ph": "Any details to remember...",
+    "save": "Save Transaction",
+    "saved": "Saved!",
+    "categorized_as": "Categorized as"
+  },
+  "gifts": {
+    "title": "Gift Ledger",
+    "subtitle": "Shagun & Relationship Tracker",
+    "all": "All Gifts",
+    "given": "Given by Us",
+    "received": "Received by Us",
+    "add_gift": "Add Gift",
+    "person_name": "Person Name",
+    "occasion": "Occasion (e.g. Wedding)",
+    "save": "Save Gift"
+  },
+  "debts": {
+    "title": "Debts & Credits",
+    "subtitle": "Track informal borrowing & lending",
+    "we_owe": "We Owe",
+    "owed_to_us": "Owed to Us",
+    "active": "Active",
+    "settled": "Settled",
+    "to_pay": "To Pay",
+    "to_collect": "To Collect",
+    "overdue": "OVERDUE",
+    "send_reminder": "Send Reminder",
+    "draft_msg": "Draft a WhatsApp message to"
+  },
+  "assistant": {
+    "compliance": "Compliance Notice: Hema AI provides educational information only. It is not registered with SEBI as an investment advisor.",
+    "placeholder": "Ask me anything..."
+  }
+}
