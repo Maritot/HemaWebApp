@@ -134,15 +134,15 @@ const Expenses: React.FC = () => {
           {/* Amount Input */}
           <div className="text-center pt-2">
             <p className="text-textMuted text-sm font-medium mb-2">{t('expenses.amount')}</p>
-            <div className="flex items-center justify-center text-5xl font-bold text-textMain">
-              <span className="text-3xl text-textMuted mr-1">₹</span>
+            <div className="flex items-center justify-center text-4xl sm:text-5xl font-bold text-textMain px-2">
+              <span className="text-2xl sm:text-3xl text-textMuted mr-1 shrink-0">₹</span>
               <input 
                 type="number" 
                 inputMode="numeric"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 placeholder="0"
-                className="w-40 bg-transparent outline-none text-center placeholder:text-borderLight"
+                className="w-full max-w-xs bg-transparent outline-none text-center placeholder:text-borderLight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
           </div>
