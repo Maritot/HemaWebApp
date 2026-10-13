@@ -78,11 +78,14 @@
 
 ```
 C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp
-├── Hema-v1.0.apk                # Ready-to-install Android Debug APK (4.4 MB)
+├── Hema-v1.0-release.apk        # Signed Production Release APK (3.38 MB, v2 signed)
+├── Hema-v1.0-release.aab        # Signed Google Play Store Release Bundle (3.24 MB)
+├── Hema-v1.0.apk                # Convenience Debug APK (4.4 MB)
 ├── capacitor.config.json        # Capacitor configuration (com.hema.app)
 ├── android/                     # Complete native Android Studio project
 │   ├── app/
-│   │   ├── build.gradle         # Configured with compileOptions Java 17
+│   │   ├── build.gradle         # Configured with signingConfigs.release & Java 17
+│   │   ├── hema-release.jks     # Production Keystore (RSA 2048, validity 10000 days)
 │   │   └── src/main/
 │   │       ├── AndroidManifest.xml # Camera, Location, Audio, Internet permissions
 │   │       └── res/             # Hema Gold icons in all mipmap buckets
@@ -116,22 +119,37 @@ C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp
 
 ---
 
-## 4. FUTURE ROADMAP (OPTIONAL POLISH)
+## 4. PRODUCTION SIGNING & RELEASE ARTIFACTS
 
-1. **Google Play Store Release:** Sign the APK with a production keystore (`./gradlew assembleRelease` or bundle `.aab`) to publish on the Google Play Store.
-2. **Cloud Encrypted Sync (Google Drive / Firebase):** Automated daily sync of the JSON backup payload to Google Drive without manual file exports.
-3. **Receipt OCR:** Use Gemini Vision API to auto-scan paper bills or gold receipts and fill transaction fields automatically.
+- **Keystore Location:** `android/app/hema-release.jks`
+- **Keystore Alias:** `hema_key`
+- **Keystore / Key Password:** `hema_release_password_2026`
+- **Signer Distinguished Name (DN):** `CN=Hema Finance, OU=Mobile, O=Hema Household, L=Hyderabad, ST=Telangana, C=IN`
+- **SHA-256 Digest:** `378433f584112b09fe8ebaa1047fa601b9cd477857e7ee93afa2cc67c5d617b1`
+- **Signature Scheme:** APK Signature Scheme v2 (Full signature verification verified via Android SDK `apksigner`).
+- **Google Play Store Ready:** `Hema-v1.0-release.aab` meets all modern Play Console requirements (targetSdk 34+, 64-bit native code, app bundle format).
 
 ---
 
-## 5. OPERATIONAL INSTRUCTIONS FOR AGENTS
+## 5. FUTURE ROADMAP (OPTIONAL POLISH)
+
+1. **Receipt OCR:** Use Gemini Vision API to auto-scan paper bills or gold receipts and fill transaction fields automatically.
+2. **WhatsApp & Native Share Sheet:** Direct 1-tap sharing of JSON backups via Android native share sheet (`navigator.share`).
+3. **Cloud Encrypted Sync (Google Drive / Firebase):** Automated daily sync of the JSON backup payload to Google Drive without manual file exports.
+
+---
+
+## 6. OPERATIONAL INSTRUCTIONS FOR AGENTS
 
 1. **Development Server:** Run `npm run dev` in `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp` (listening on `http://localhost:5173/`).
-2. **Android Sync & Build:**
+2. **Android Release Build Commands:**
    ```powershell
-   npm run build
-   npx cap sync android
+   cmd.exe /c "npm run build"
+   cmd.exe /c "npx cap sync android"
    $env:JAVA_HOME = "C:\Program Files\Autopsy-4.22.1\jre"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
-   cd android; .\gradlew.bat assembleDebug; cd ..
+   cd android; .\gradlew.bat assembleRelease bundleRelease; cd ..
+   Copy-Item android/app/build/outputs/apk/release/app-release.apk Hema-v1.0-release.apk
+   Copy-Item android/app/build/outputs/bundle/release/app-release.aab Hema-v1.0-release.aab
    ```
 3. **Git Remote:** Origin is linked to `https://github.com/Maritot/HemaWebApp.git` on branch `master`.
+
