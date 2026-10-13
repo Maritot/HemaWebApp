@@ -1,19 +1,22 @@
 import { getTransactions, getDebts, getGifts } from './db';
 
 const GEMINI_KEY_STORAGE = 'hema_gemini_api_key';
-const ACTIVE_MODEL_STORAGE = 'hema_active_gemini_model';
+const ACTIVE_TARGET_STORAGE = 'hema_active_gemini_target';
 
-// Candidate models in preference order (modern 2.5 / 2.0 down to legacy)
-const CANDIDATE_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash-latest',
-  'gemini-1.5-flash-8b',
-  'gemini-1.5-pro',
-  'gemini-pro',
-  'gemini-1.5-flash'
+export interface EndpointTarget {
+  apiVersion: 'v1' | 'v1beta';
+  model: string;
+}
+
+// Priority target list (stable GA v1 first, then v1beta next-gen)
+export const ENDPOINT_TARGETS: EndpointTarget[] = [
+  { apiVersion: 'v1', model: 'gemini-1.5-flash' },
+  { apiVersion: 'v1beta', model: 'gemini-2.5-flash' },
+  { apiVersion: 'v1beta', model: 'gemini-2.0-flash' },
+  { apiVersion: 'v1', model: 'gemini-1.5-pro' },
+  { apiVersion: 'v1beta', model: 'gemini-2.5-flash-lite' },
+  { apiVersion: 'v1beta', model: 'gemini-1.5-flash-latest' },
+  { apiVersion: 'v1', model: 'gemini-pro' }
 ];
 
 export const getGeminiApiKey = (): string => {
@@ -23,12 +26,15 @@ export const getGeminiApiKey = (): string => {
 export const setGeminiApiKey = (key: string): void => {
   if (key) {
     localStorage.setItem(GEMINI_KEY_STORAGE, key.trim());
-    // Clear previously cached model so it re-discovers for the new key
-    localStorage.removeItem(ACTIVE_MODEL_STORAGE);
+    localStorage.removeItem(ACTIVE_TARGET_STORAGE);
   } else {
     localStorage.removeItem(GEMINI_KEY_STORAGE);
-    localStorage.removeItem(ACTIVE_MODEL_STORAGE);
+    localStorage.removeItem(ACTIVE_TARGET_STORAGE);
   }
+};
+
+export const clearGeminiCache = (): void => {
+  localStorage.removeItem(ACTIVE_TARGET_STORAGE);
 };
 
 export interface ChatMessage {
@@ -37,49 +43,110 @@ export interface ChatMessage {
 }
 
 /**
- * Dynamically queries Google Generative Language API to find the best active model
- * supported by the user's specific API key.
+ * Discover working models by querying both v1 and v1beta ModelService endpoints
  */
-export const discoverBestModel = async (apiKey: string): Promise<string> => {
-  const cached = localStorage.getItem(ACTIVE_MODEL_STORAGE);
-  if (cached) return cached;
-
+export const discoverWorkingTarget = async (apiKey: string): Promise<EndpointTarget> => {
+  // Check cached target
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    if (res.ok) {
-      const data = await res.json();
-      const availableModels: string[] = (data.models || [])
-        .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
-        .map((m: any) => m.name.replace(/^models\//, ''));
-
-      // Check preferred models in priority order
-      for (const candidate of CANDIDATE_MODELS) {
-        if (availableModels.includes(candidate)) {
-          localStorage.setItem(ACTIVE_MODEL_STORAGE, candidate);
-          return candidate;
-        }
-      }
-
-      // Check any model containing 'flash'
-      const anyFlash = availableModels.find(m => m.toLowerCase().includes('flash'));
-      if (anyFlash) {
-        localStorage.setItem(ACTIVE_MODEL_STORAGE, anyFlash);
-        return anyFlash;
-      }
-
-      // Pick the first available model that supports generateContent
-      if (availableModels.length > 0) {
-        const first = availableModels[0];
-        localStorage.setItem(ACTIVE_MODEL_STORAGE, first);
-        return first;
+    const cached = localStorage.getItem(ACTIVE_TARGET_STORAGE);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed.apiVersion && parsed.model) {
+        return parsed;
       }
     }
-  } catch (err) {
-    console.warn('Could not list models from Gemini API, falling back to candidates:', err);
+  } catch (e) {
+    // Ignore cache parse error
   }
 
-  // Default to gemini-2.5-flash
-  return 'gemini-2.5-flash';
+  // Try checking available models from v1 and v1beta
+  for (const apiVer of ['v1', 'v1beta'] as const) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/${apiVer}/models?key=${apiKey}`);
+      if (res.ok) {
+        const data = await res.json();
+        const available: string[] = (data.models || [])
+          .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
+          .map((m: any) => m.name.replace(/^models\//, ''));
+
+        // Match against prioritized models
+        for (const target of ENDPOINT_TARGETS) {
+          if (target.apiVersion === apiVer && available.includes(target.model)) {
+            localStorage.setItem(ACTIVE_TARGET_STORAGE, JSON.stringify(target));
+            return target;
+          }
+        }
+
+        // Match any flash model
+        const anyFlash = available.find(m => m.toLowerCase().includes('flash'));
+        if (anyFlash) {
+          const matched: EndpointTarget = { apiVersion: apiVer, model: anyFlash };
+          localStorage.setItem(ACTIVE_TARGET_STORAGE, JSON.stringify(matched));
+          return matched;
+        }
+
+        if (available.length > 0) {
+          const matched: EndpointTarget = { apiVersion: apiVer, model: available[0] };
+          localStorage.setItem(ACTIVE_TARGET_STORAGE, JSON.stringify(matched));
+          return matched;
+        }
+      }
+    } catch (e) {
+      // Continue to next version
+    }
+  }
+
+  // Default to v1 with gemini-1.5-flash
+  return { apiVersion: 'v1', model: 'gemini-1.5-flash' };
+};
+
+/**
+ * Test the API key and return exact status and working model
+ */
+export const testGeminiConnection = async (apiKey: string): Promise<{ success: boolean; model?: string; message: string }> => {
+  if (!apiKey.trim()) {
+    return { success: false, message: 'Please enter an API key.' };
+  }
+
+  const cleanKey = apiKey.trim();
+  const testPrompt = [{ role: 'user', parts: [{ text: 'Respond with the single word: READY' }] }];
+
+  for (const target of ENDPOINT_TARGETS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/${target.apiVersion}/models/${target.model}:generateContent?key=${cleanKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: testPrompt })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          localStorage.setItem(ACTIVE_TARGET_STORAGE, JSON.stringify(target));
+          return {
+            success: true,
+            model: `${target.model} (${target.apiVersion})`,
+            message: `Connected successfully to Google Gemini (${target.model} on ${target.apiVersion})!`
+          };
+        }
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        const errMsg = errJson.error?.message || `HTTP ${res.status}`;
+        if (res.status === 400 && errMsg.includes('API key not valid')) {
+          return { success: false, message: 'Invalid API key. Please check your Google AI Studio key.' };
+        }
+      }
+    } catch (e: any) {
+      // Continue checking next candidate
+    }
+  }
+
+  return { 
+    success: false, 
+    message: 'Could not connect to Gemini models. Falling back to local offline financial assistant.' 
+  };
 };
 
 export const queryGemini = async (prompt: string, history: ChatMessage[] = []): Promise<string> => {
@@ -135,35 +202,36 @@ Your goals:
     parts: [{ text: `${systemPrompt}\n\nUser Question: ${prompt}` }]
   });
 
-  // Discover best model or build candidate list
-  const discoveredModel = await discoverBestModel(apiKey);
-  const modelsToTry = Array.from(new Set([discoveredModel, ...CANDIDATE_MODELS]));
+  // Get discovered target and candidate targets
+  const bestTarget = await discoverWorkingTarget(apiKey);
+  const targetsToTry: EndpointTarget[] = [
+    bestTarget,
+    ...ENDPOINT_TARGETS.filter(t => !(t.apiVersion === bestTarget.apiVersion && t.model === bestTarget.model))
+  ];
 
-  for (const model of modelsToTry) {
+  for (const target of targetsToTry) {
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            contents,
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 800
-            }
-          })
-        }
-      );
+      const url = `https://generativelanguage.googleapis.com/${target.apiVersion}/models/${target.model}:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 800
+          }
+        })
+      });
 
       if (response.ok) {
         const data = await response.json();
         const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (candidateText) {
-          // Successfully got response! Save this working model
-          localStorage.setItem(ACTIVE_MODEL_STORAGE, model);
+          // Successfully got response! Save this working target
+          localStorage.setItem(ACTIVE_TARGET_STORAGE, JSON.stringify(target));
           return candidateText.trim();
         }
       } else {
@@ -171,23 +239,22 @@ Your goals:
         const status = response.status;
         const errMsg = errData.error?.message || `HTTP ${status}`;
 
-        // If it's a 404 (model not found / deprecated) or 400 (unsupported), clear cache and try next candidate
-        if (status === 404 || status === 400) {
-          localStorage.removeItem(ACTIVE_MODEL_STORAGE);
-          continue;
+        // If invalid key, return clear guidance
+        if (status === 400 && errMsg.includes('API key not valid')) {
+          return `Google Gemini notice: The entered API key is invalid. Please tap "Change Key" in the top banner and paste your key from Google AI Studio.`;
         }
 
-        // If it's 401/403 (Invalid API key), don't keep trying models
-        if (status === 401 || status === 403) {
-          return `Google Gemini API Key error: ${errMsg}. Please verify your API key in the top banner.`;
+        // If 404 or unsupported, continue trying next endpoint target silently
+        if (status === 404 || status === 400) {
+          continue;
         }
       }
     } catch (netErr: any) {
-      // Continue to next candidate or fallback
+      // Network error, try next or fallback
     }
   }
 
-  // If all online model attempts failed, fall back to local intelligent guidance
+  // If all online attempts failed, fall back to local guidance gracefully
   return generateLocalFinancialAdvice(prompt);
 };
 

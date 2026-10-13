@@ -3,7 +3,7 @@ import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink } 
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
-import { queryGemini, getGeminiApiKey, setGeminiApiKey, ChatMessage } from '@/lib/gemini';
+import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, ChatMessage } from '@/lib/gemini';
 
 const Assistant: React.FC = () => {
   const { t } = useTranslation();
@@ -18,10 +18,12 @@ const Assistant: React.FC = () => {
   ]);
   const [isTyping, setIsTyping] = useState(false);
 
-  // Gemini Key Modal State
+  // Gemini Key Modal & Connection Test State
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(getGeminiApiKey());
   const [hasApiKey, setHasApiKey] = useState(!!getGeminiApiKey());
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Sync voice input with text input
   useEffect(() => {
@@ -67,9 +69,15 @@ const Assistant: React.FC = () => {
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
             {hasApiKey ? 'Gemini Live' : 'Local AI'}
           </span>
+          <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
+            v1.1
+          </span>
         </div>
         <button
-          onClick={() => setShowKeyModal(true)}
+          onClick={() => {
+            setTestResult(null);
+            setShowKeyModal(true);
+          }}
           className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
         >
           <Key size={12} />
@@ -186,11 +194,25 @@ const Assistant: React.FC = () => {
                 <input 
                   type="password"
                   value={apiKeyInput}
-                  onChange={e => setApiKeyInput(e.target.value)}
+                  onChange={e => {
+                    setApiKeyInput(e.target.value);
+                    setTestResult(null);
+                  }}
                   placeholder="AIzaSy..."
                   className="w-full mt-1 p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs font-mono"
                 />
               </div>
+
+              {testResult && (
+                <div className={cn(
+                  "p-2.5 rounded-xl text-[11px] leading-relaxed border",
+                  testResult.success 
+                    ? "bg-green-50 border-green-200 text-green-800 font-semibold" 
+                    : "bg-amber-50 border-amber-200 text-amber-900"
+                )}>
+                  {testResult.message}
+                </div>
+              )}
 
               <div className="flex items-center justify-between text-[11px] pt-1">
                 <a 
@@ -202,6 +224,22 @@ const Assistant: React.FC = () => {
                   <span>Get Free Key at Google AI Studio</span>
                   <ExternalLink size={10} className="ml-1" />
                 </a>
+
+                <button
+                  type="button"
+                  disabled={!apiKeyInput.trim() || isTesting}
+                  onClick={async () => {
+                    setIsTesting(true);
+                    setTestResult(null);
+                    clearGeminiCache();
+                    const res = await testGeminiConnection(apiKeyInput);
+                    setTestResult(res);
+                    setIsTesting(false);
+                  }}
+                  className="text-primary-700 font-bold hover:underline disabled:opacity-50"
+                >
+                  {isTesting ? 'Testing...' : 'Test Connection'}
+                </button>
               </div>
 
               <div className="flex space-x-2 pt-2">
