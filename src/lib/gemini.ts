@@ -1,6 +1,20 @@
 import { getTransactions, getDebts, getGifts } from './db';
 
 const GEMINI_KEY_STORAGE = 'hema_gemini_api_key';
+const ACTIVE_MODEL_STORAGE = 'hema_active_gemini_model';
+
+// Candidate models in preference order (modern 2.5 / 2.0 down to legacy)
+const CANDIDATE_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-flash-8b',
+  'gemini-1.5-pro',
+  'gemini-pro',
+  'gemini-1.5-flash'
+];
 
 export const getGeminiApiKey = (): string => {
   return localStorage.getItem(GEMINI_KEY_STORAGE) || import.meta.env.VITE_GEMINI_API_KEY || '';
@@ -9,8 +23,11 @@ export const getGeminiApiKey = (): string => {
 export const setGeminiApiKey = (key: string): void => {
   if (key) {
     localStorage.setItem(GEMINI_KEY_STORAGE, key.trim());
+    // Clear previously cached model so it re-discovers for the new key
+    localStorage.removeItem(ACTIVE_MODEL_STORAGE);
   } else {
     localStorage.removeItem(GEMINI_KEY_STORAGE);
+    localStorage.removeItem(ACTIVE_MODEL_STORAGE);
   }
 };
 
@@ -19,8 +36,59 @@ export interface ChatMessage {
   text: string;
 }
 
-export const queryGemini = async (prompt: string, history: ChatMessage[]): Promise<string> => {
+/**
+ * Dynamically queries Google Generative Language API to find the best active model
+ * supported by the user's specific API key.
+ */
+export const discoverBestModel = async (apiKey: string): Promise<string> => {
+  const cached = localStorage.getItem(ACTIVE_MODEL_STORAGE);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (res.ok) {
+      const data = await res.json();
+      const availableModels: string[] = (data.models || [])
+        .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
+        .map((m: any) => m.name.replace(/^models\//, ''));
+
+      // Check preferred models in priority order
+      for (const candidate of CANDIDATE_MODELS) {
+        if (availableModels.includes(candidate)) {
+          localStorage.setItem(ACTIVE_MODEL_STORAGE, candidate);
+          return candidate;
+        }
+      }
+
+      // Check any model containing 'flash'
+      const anyFlash = availableModels.find(m => m.toLowerCase().includes('flash'));
+      if (anyFlash) {
+        localStorage.setItem(ACTIVE_MODEL_STORAGE, anyFlash);
+        return anyFlash;
+      }
+
+      // Pick the first available model that supports generateContent
+      if (availableModels.length > 0) {
+        const first = availableModels[0];
+        localStorage.setItem(ACTIVE_MODEL_STORAGE, first);
+        return first;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not list models from Gemini API, falling back to candidates:', err);
+  }
+
+  // Default to gemini-2.5-flash
+  return 'gemini-2.5-flash';
+};
+
+export const queryGemini = async (prompt: string, history: ChatMessage[] = []): Promise<string> => {
   const apiKey = getGeminiApiKey();
+
+  // If no Gemini API Key is configured, use local intelligent financial engine
+  if (!apiKey) {
+    return generateLocalFinancialAdvice(prompt);
+  }
 
   // Fetch current household financial context to pass to Gemini
   let contextSnippet = '';
@@ -49,55 +117,81 @@ Your goals:
 3. When discussing investments, always include a brief disclaimer: "(Disclaimer: Provided for educational purposes only; not SEBI investment advice)."
 4. Keep answers concise, readable, and well-structured with bullet points where appropriate.${contextSnippet}`;
 
-  // If no Gemini API Key is configured, use local intelligent financial engine
-  if (!apiKey) {
-    return generateLocalFinancialAdvice(prompt);
+  // Format past history turns
+  const contents: any[] = [];
+  if (history && history.length > 0) {
+    const recent = history.slice(-6);
+    for (const h of recent) {
+      contents.push({
+        role: h.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: h.text }]
+      });
+    }
   }
 
-  try {
-    // Call Google Gemini API
-    const contents = [
-      {
-        role: 'user',
-        parts: [{ text: `${systemPrompt}\n\nUser Question: ${prompt}` }]
+  // Add the current prompt with system context
+  contents.push({
+    role: 'user',
+    parts: [{ text: `${systemPrompt}\n\nUser Question: ${prompt}` }]
+  });
+
+  // Discover best model or build candidate list
+  const discoveredModel = await discoverBestModel(apiKey);
+  const modelsToTry = Array.from(new Set([discoveredModel, ...CANDIDATE_MODELS]));
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents,
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 800
+            }
+          })
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (candidateText) {
+          // Successfully got response! Save this working model
+          localStorage.setItem(ACTIVE_MODEL_STORAGE, model);
+          return candidateText.trim();
+        }
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        const status = response.status;
+        const errMsg = errData.error?.message || `HTTP ${status}`;
+
+        // If it's a 404 (model not found / deprecated) or 400 (unsupported), clear cache and try next candidate
+        if (status === 404 || status === 400) {
+          localStorage.removeItem(ACTIVE_MODEL_STORAGE);
+          continue;
+        }
+
+        // If it's 401/403 (Invalid API key), don't keep trying models
+        if (status === 401 || status === 403) {
+          return `Google Gemini API Key error: ${errMsg}. Please verify your API key in the top banner.`;
+        }
       }
-    ];
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 600
-          }
-        })
-      }
-    );
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      const errMsg = errData.error?.message || `API error (${response.status})`;
-      return `Gemini API returned an error: ${errMsg}. Showing local response instead:\n\n${generateLocalFinancialAdvice(prompt)}`;
+    } catch (netErr: any) {
+      // Continue to next candidate or fallback
     }
-
-    const data = await response.json();
-    const candidate = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (candidate) {
-      return candidate.trim();
-    }
-    return generateLocalFinancialAdvice(prompt);
-  } catch (err: any) {
-    return `Network notice: Could not reach Gemini online (${err.message}). Here is local guidance:\n\n${generateLocalFinancialAdvice(prompt)}`;
   }
+
+  // If all online model attempts failed, fall back to local intelligent guidance
+  return generateLocalFinancialAdvice(prompt);
 };
 
-function generateLocalFinancialAdvice(query: string): string {
+export function generateLocalFinancialAdvice(query: string): string {
   const q = query.toLowerCase();
 
   if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat')) {
