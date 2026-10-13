@@ -1,0 +1,8 @@
+{
+  "appId": "com.hema.app",
+  "appName": "Hema",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

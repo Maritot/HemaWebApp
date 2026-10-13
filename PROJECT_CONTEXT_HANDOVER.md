@@ -3,8 +3,8 @@
 > **Document Type:** AI Agent Context & Handover Blueprint  
 > **Repository:** `https://github.com/Maritot/HemaWebApp`  
 > **Workspace Path:** `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp`  
-> **Primary Technology Stack:** React 18 (Vite, TypeScript), Tailwind CSS, IndexedDB (`idb`), Vite PWA Plugin, Web Speech API, Geolocation API, HTML5 Canvas, React-i18next.  
-> **Target Demographic:** Middle-aged / elderly non-technical Indian parents and households. Minimalist, high contrast, warm "Hema Gold" theme (`#d97706`), localized, vernacular-friendly, 100% offline-first.
+> **Primary Technology Stack:** React 18 (Vite, TypeScript), Tailwind CSS, IndexedDB (`idb`), Capacitor Android Native, Vite PWA Plugin, Google Gemini API, Web Speech API, Geolocation API, HTML5 Canvas, React-i18next.  
+> **Target Demographic:** Middle-aged / elderly non-technical Indian parents and households. Minimalist, high contrast, warm "Hema Gold" theme (`#d97706`), localized (EN / HI / TE), vernacular-friendly, 100% offline-first.
 
 ---
 
@@ -13,87 +13,64 @@
 ### 1.1 Original Native Android Project (Deprecated)
 - **Path:** `C:\Users\LAB2_PC14\Desktop\TharunAvula\Daddy`
 - **Original Stack:** Kotlin, Jetpack Compose, Hilt, Room, ViewModel.
-- **Why it was changed:** The user requested a complete tech-stack pivot: build a modern, rapid-iteration **Web App** first with full capabilities, polish UX, verify user flow, and eventually wrap it as an Android mobile app (via PWA / Capacitor).
+- **Why it was changed:** The user requested a complete tech-stack pivot: build a modern, rapid-iteration **Web App** first with full capabilities, polish UX, verify user flow, and eventually wrap it as an Android mobile app.
 
-### 1.2 Pivot to Vite React SPA
+### 1.2 Web App & Progressive Hybrid Architecture
 - Scaffolded `HemaWebApp` inside `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp`.
-- Resolved ESM loader issues by setting `"type": "module"` in `package.json`, fixing `vite.config.ts`, and configuring PostCSS / Tailwind CommonJS configurations.
-- Established a single, elegant color palette centered on **Hema Gold** (`#d97706`, with amber accents).
+- Established a single, elegant color palette centered on **Hema Gold** (`#d97706`, with warm amber accents).
+- Configured offline database schema, speech recognition, vernacular autocorrect, and PWA capabilities.
 
 ---
 
-## 2. CURRENT STATUS: FULL FEATURE IMPLEMENTATION (WHAT WORKS TODAY)
+## 2. CURRENT STATUS: ALL 5 MILESTONES COMPLETED (OCTOBER 2026)
 
-The app is completely operational and running locally via `npm run dev` at `http://localhost:5173/`.
+### 2.1 📱 Native Android App Built (`android/` & `Hema-v1.0.apk`)
+- **Capacitor Integration:** Fully initialized with `@capacitor/core`, `@capacitor/cli`, and `@capacitor/android` (`appId: com.hema.app`).
+- **Native Android Manifest Permissions Configured:**
+  - `android.permission.CAMERA`
+  - `android.permission.ACCESS_FINE_LOCATION` & `ACCESS_COARSE_LOCATION`
+  - `android.permission.RECORD_AUDIO` & `MODIFY_AUDIO_SETTINGS`
+  - `android.permission.INTERNET` & `ACCESS_NETWORK_STATE`
+- **App Launcher Icons:** Branded Hema Gold rounded icons placed in all mipmap density buckets (`hdpi`, `mdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`).
+- **Java 17 Gradle Toolchain:** Configured Gradle 8.14.3 and Android Gradle Plugin 8.13.0 with `JavaVersion.VERSION_17` compatibility.
+- **APK Successfully Compiled:**
+  - Build output: `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp\android\app\build\outputs\apk\debug\app-debug.apk`
+  - Root convenience copy: `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp\Hema-v1.0.apk` (4.4 MB). Ready to install directly on any Android smartphone.
 
-### 2.1 Offline Storage Architecture (`src/lib/db.ts`)
-- Powered by `idb` wrapping browser **IndexedDB** (Database: `HemaWebAppDB`, version 4).
-- **Stores:**
-  1. `transactions`: ID, amount, categoryId, type (`EXPENSE` | `INCOME`), date, notes.
-  2. `people`: Relationship face cards (id, name, relationship, phone, avatarUrl, createdAt). Includes an automated fallback to `localStorage` for maximum resilience.
-  3. `gifts`: ID, person, occasion, type (`GIVEN` | `RECEIVED`), category (`CASH` | `GOLD` | `SILVER` | `CLOTHES` | `OTHER`), item, amount, weightGrams, purity, date, notes.
-  4. `debts`: ID, person, principalAmount, amount, type (`WE_OWE` | `OWED_TO_US`), status (`PENDING` | `SETTLED` | `OVERDUE`), interestType, interestRate, customFormula, tenureMonths, interestAmount, dueDate, dateCreated, notes, and `payments` array.
+### 2.2 🧠 Real Google Gemini AI Integration (`src/pages/Assistant.tsx` & `src/lib/gemini.ts`)
+- **Direct Gemini API Connection:** Integrated Google Gemini REST endpoint (`gemini-1.5-flash`) via `queryGemini()`.
+- **Live Household Context Awareness:** Before answering, the assistant pulls real-time user metrics from IndexedDB (Total Income, Total Expenses, Current Net, Active Loans/Vaddi, and Shagun count) and passes them into the prompt.
+- **API Key Management:** Built-in connection modal lets the user save, update, or clear their free Google Gemini API key from AI Studio.
+- **Local Financial Intelligence Fallback:** If offline or no key is configured, provides expert household advice on Gold (making charges vs SGBs), Vaddi interest calculation rules, 50-30-20 family budgets, and SEBI compliance guidelines.
+- **Speech-to-Text Input:** Vernacular voice recognition via Web Speech API (`useSpeechToText.ts`).
 
-### 2.2 Expenses & Income Module (`src/pages/Expenses.tsx`)
-- **Available Balance Indicator:** Real-time computation of `Total Income - Total Expenses` displayed in a prominent gold banner before recording a transaction.
-- **Dynamic Context-Aware Inputs:**
-  - In *Expense* mode: prompts "What was this for?" with smart suggestions (`kiranam`, `milk`, `bijli`).
-  - In *Income* mode: prompts "Source of Income" with appropriate hints (`Salary`, `Pension`, `Rent`).
-- **Vernacular Auto-Correction Engine (`src/lib/AutoCorrectEngine.ts`):**
-  - Uses Levenshtein distance matching (`FuzzyMatcher.ts`) to map common transliterated Indian terms to structured categories (e.g., `kirana` $\rightarrow$ `Groceries`, `bijli` $\rightarrow$ `Utilities`).
-- **Voice Entry (Web Speech API):**
-  - Integrated via `src/hooks/useSpeechToText.ts`. Clicking the mic icon automatically fills the input with spoken vernacular terms.
-- **Custom Date Picker:**
-  - Allows backdating or future-dating transactions; defaults to current date.
-- **Fluid Large-Number Input:**
-  - Removed browser spinners; input expands gracefully without clipping large numbers (e.g. ₹31,089+).
+### 2.3 🎨 PWA Polish & Official Vector Branding Assets
+- **Custom App Icons:** Generated using HTML5 canvas script (`scripts/generate-icons.js`):
+  - `public/hema-icon-192.png` (192×192 PWA maskable)
+  - `public/hema-icon-512.png` (512×512 PWA maskable)
+  - `public/favicon.svg` & `public/hema-icon.svg` (crisp scalable vector)
+- **Manifest & Head:** Updated `vite.config.ts` and `index.html` with apple-touch-icon, mobile viewport lock (`user-scalable=no`), and gold theme color (`#d97706`).
 
-### 2.3 Dashboard Module (`src/pages/Dashboard.tsx`)
-- **Real-Time Financial Totals:** Total balance, Total Income, and Total Expense calculated from local IndexedDB data.
-- **Dynamic 7-Day Spending Bar Chart:** Groups actual past 7-day expense transactions using `date-fns` and renders via `recharts`.
-- **Transaction History & Management:** Lists recent transactions with a one-click deletion option that recalculates all metrics immediately.
+### 2.4 🔒 Settings Upgrades: 4-Digit Security PIN & Alerts (`src/pages/Settings.tsx`)
+- **App PIN Lock Engine (`src/lib/security.ts` & `src/components/LockScreen.tsx`):**
+  - Users can enable/disable a 4-digit security PIN to protect their household finances.
+  - Full-screen keypad lock on launch with shake animation for incorrect attempts.
+  - "Lock App Now" instant lock shortcut in the header and settings.
+- **Notification & Urgent Loan Alerts:**
+  - Integrates browser `Notification.requestPermission()`.
+  - Scans IndexedDB for overdue loans or loans due within 3 days and displays active reminder count and alerts.
+  - Includes a "Test Device Reminder" button.
 
-### 2.4 Relationship & Shagun Ledger (`src/pages/Gifts.tsx`)
-- **People Face Cards:** Visual avatar cards with photos (or initial monogram badges), relationship pills (*Uncle, Aunt, In-laws, Cousin, Friend, Colleague*), and quick counts of gifts received vs given.
-- **Canvas-Optimized Photo Upload:** Off-screen canvas resizes camera/gallery photos to a lightweight 200×200 JPEG to avoid quota issues.
-- **Drill-Down Person History:** Tapping any person opens their dedicated ledger showing:
-  - Total exchange summary (*They gave: ₹X | We gave: ₹Y*).
-  - Chronological history with green `Received` and amber `Given` badges.
-- **Indian Household Units (Gold & Silver):**
-  - **Gold:** Grams input with real-time conversion to **Tola / Savaran** (~8g = 1 Tola), purity selector (`22K`, `24K`, `18K`).
-  - **Silver:** Grams input and item names (*Silver Lamp/Diya, Coin*).
-  - **Cash:** Traditional Shagun entries (*₹501, ₹1,116*).
-  - **Clothes & Other:** Sarees, clothing, appliances.
+### 2.5 💾 Full Ledger Backup, Export & Family Device Sync (`src/lib/db.ts`)
+- **One-Click JSON Backup (`exportFullBackup`):** Exports the entire database (`transactions`, `people`, `gifts`, `debts`, `payments`) into a single timestamped `.json` file.
+- **Restore from Backup (`restoreFullBackup`):** Upload any previous `.json` backup to restore all data onto a new phone or browser seamlessly.
+- **Multi-Device Family Sharing:** Export JSON and share via WhatsApp or Google Drive to other family members.
+- **CSV Export:** Kept intact for Excel / Sheets tax calculations.
 
-### 2.5 Debts, Loans & Verified Proof Engine (`src/pages/Debts.tsx`)
-- **Summary Cards:** Aggregates real remaining balances for "We Owe" and "Owed to Us".
-- **Indian Interest Calculation Engine:**
-  1. `VADDI_MONTHLY`: Traditional ₹ per ₹100 per month (e.g., *₹2 Vaddi* = 2% per month: $P \times (R/100) \times M$).
-  2. `SIMPLE_ANNUAL`: Standard banking simple interest $P \times R \times (M/12) / 100$.
-  3. `COMPOUND_ANNUAL`: Compound annual interest $P \times (1 + R/100)^{M/12} - P$.
-  4. `CUSTOM`: User-defined math expression builder evaluating variables `P` (Principal), `R` (Rate), `M` (Months).
-  5. `NONE`: Friendly zero-interest loan.
-- **Live Calculation Preview:** Dynamically computes and displays the principal, interest, explanation, and final repayable total.
-- **Full Editing:** Pencil icon allows editing existing loan terms.
-- **Partial Repayment Tracker:**
-  - "Record Payment" button to log installments.
-  - Keeps chronological repayment history with payment modes (*UPI, Cash, Bank NEFT, Cheque*).
-  - Auto-settles loans when balance reaches zero.
-- **Camera Proof & Watermarking Engine:**
-  - Triggers native mobile camera (`capture="environment"`).
-  - HTML5 canvas permanently watermarks the photo with: `HEMA VERIFIED PROOF • [Date & Time]`.
-  - Captures device GPS coordinates (`navigator.geolocation`).
-  - "View Proof" modal displays the watermarked photo, timestamp, and a clickable Google Maps link to the exact coordinates.
-- **Dynamic WhatsApp Reminder:** Pre-drafts a WhatsApp message reflecting only the *remaining* balance.
-
-### 2.6 Localization & Settings (`src/pages/Settings.tsx`, `src/locales/`)
-- Multi-language switching between **English**, **Hindi (हिंदी)**, and **Telugu (తెలుగు)** via `react-i18next`.
-- Complete coverage across navigation, dashboard, forms, badges, and compliance text.
-- **One-Click CSV Export:** Generates and downloads `hema_finance_export.csv` containing all transactions, debts, repayments, and gifts.
-
-### 2.7 AI Assistant (`src/pages/Assistant.tsx`)
-- Voice-enabled chat interface with SEBI educational compliance disclaimer.
-- Context-aware answers with typing indicators.
+### 2.6 Core Financial Ledgers (Existing & Fully Functional)
+- **Expenses & Income (`Expenses.tsx`):** Available balance banner, context-aware category hints, wide amount inputs, custom date picker, and Levenshtein distance vernacular autocorrect (`kiranam` $\rightarrow$ `Groceries`).
+- **Gifts & Shagun Ledger (`Gifts.tsx`):** People face cards, drill-down relationship history, Gold (grams $\rightarrow$ **Tola / Savaran** conversion, 22K/24K purity), Silver, Cash, and Saree categories.
+- **Debts & Loans (`Debts.tsx`):** Indian **₹ Vaddi** monthly interest ($P \times R\% \times M$), Simple/Compound interest, custom formula engine, loan editing, partial repayments, and **camera proof with GPS coordinates & verified timestamp watermarking**.
 
 ---
 
@@ -101,75 +78,60 @@ The app is completely operational and running locally via `npm run dev` at `http
 
 ```
 C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp
-├── index.html                   # HTML Entry point
-├── package.json                 # Dependencies & scripts ("type": "module")
-├── postcss.config.cjs           # PostCSS for Tailwind
-├── tailwind.config.cjs          # Custom Hema Gold (#d97706) design system
-├── tsconfig.json                # TypeScript paths (@/ -> ./src)
-├── vite.config.ts               # Vite configuration + VitePWA plugin
-├── public/                      # Static assets & PWA manifest icons
+├── Hema-v1.0.apk                # Ready-to-install Android Debug APK (4.4 MB)
+├── capacitor.config.json        # Capacitor configuration (com.hema.app)
+├── android/                     # Complete native Android Studio project
+│   ├── app/
+│   │   ├── build.gradle         # Configured with compileOptions Java 17
+│   │   └── src/main/
+│   │       ├── AndroidManifest.xml # Camera, Location, Audio, Internet permissions
+│   │       └── res/             # Hema Gold icons in all mipmap buckets
+│   ├── build.gradle             # Java 17 subproject enforcement
+│   └── local.properties         # Android SDK path
+├── public/
+│   ├── favicon.svg              # Scalable gold vector icon
+│   ├── hema-icon-192.png        # 192x192 PWA icon
+│   └── hema-icon-512.png        # 512x512 PWA icon
+├── scripts/
+│   └── generate-icons.js        # Node canvas/PNG icon generator
 └── src/
-    ├── App.tsx                  # Main layout & bottom navigation bar
-    ├── main.tsx                 # React entry point with i18n
-    ├── i18n.ts                  # react-i18next initialization
-    ├── index.css                # Tailwind directives & global resets
+    ├── App.tsx                  # Root layout, routing, PIN session guard
     ├── components/
-    │   └── ui/Card.tsx          # Minimalist Card UI component
-    ├── hooks/
-    │   └── useSpeechToText.ts   # Custom hook for Web Speech API
+    │   ├── LockScreen.tsx       # 4-digit PIN lock screen & numpad
+    │   └── ui/Card.tsx          # Minimalist Card UI
     ├── lib/
-    │   ├── AutoCorrectEngine.ts # Transliteration dictionary & category resolver
-    │   ├── FuzzyMatcher.ts      # Levenshtein distance algorithm
-    │   ├── db.ts                # IndexedDB schema (v4) & repository methods
-    │   └── utils.ts             # Tailwind class merging utility (cn)
-    ├── locales/
-    │   ├── en/translation.json  # English strings
-    │   ├── hi/translation.json  # Hindi strings
-    │   └── te/translation.json  # Telugu strings
-    └── pages/
-        ├── Assistant.tsx        # AI Assistant chat & voice interface
-        ├── Dashboard.tsx        # Overview cards, 7-day spend chart, recent list
-        ├── Debts.tsx            # Loan register, Vaddi engine, photo/GPS proof
-        ├── Expenses.tsx         # Expense/Income entry, auto-correct, voice, date
-        ├── Gifts.tsx            # People cards, Shagun history, Gold/Silver units
-        └── Settings.tsx         # Language selection, CSV export, policies
+    │   ├── db.ts                # IndexedDB schema (v4), CRUD, backup/restore
+    │   ├── gemini.ts            # Google Gemini API & local household reasoning
+    │   ├── security.ts          # PIN setup, verify, and session state
+    │   ├── AutoCorrectEngine.ts # Vernacular category auto-correction
+    │   └── FuzzyMatcher.ts      # Levenshtein distance algorithm
+    ├── pages/
+    │   ├── Assistant.tsx        # Gemini AI chat, voice mic, key modal
+    │   ├── Dashboard.tsx        # Totals, 7-day spend chart, recent txs
+    │   ├── Debts.tsx            # Vaddi engine, partial payments, camera/GPS proof
+    │   ├── Expenses.tsx         # Income/Expense entry, voice, balance banner
+    │   ├── Gifts.tsx            # People cards, Shagun ledger, Indian units
+    │   └── Settings.tsx         # i18n, PIN security, Alerts, Backup/Restore
 ```
 
 ---
 
-## 4. FUTURE ROADMAP (NEXT STEPS FOR ANY AGENT)
+## 4. FUTURE ROADMAP (OPTIONAL POLISH)
 
-Any succeeding AI agent should consult this plan to continue development seamlessly:
-
-### Step 1: Capacitor Native Mobile Android Build (Priority #1)
-The user has reiterated their intent: *"create it like a web app and at last we shall convert it into a mobile android app"*.
-- **Tasks:**
-  1. Install Capacitor packages:
-     ```bash
-     npm install @capacitor/core @capacitor/cli @capacitor/android
-     npx cap init "Hema" "com.hema.app" --web-dir dist
-     ```
-  2. Build the web app: `npm run build`.
-  3. Add the Android platform: `npx cap add android`.
-  4. Sync changes: `npx cap sync android`.
-  5. Open in Android Studio: `npx cap open android` and generate debug/release APK.
-  6. Enable native camera & geolocation permissions in `android/app/src/main/AndroidManifest.xml` (`CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`).
-
-### Step 2: Advanced AI Chat LLM Integration
-- Currently, `src/pages/Assistant.tsx` has simulated responses.
-- **Tasks:**
-  - Connect to an actual backend or client-side LLM (such as Google Gemini API via `@google/genai` or a local small model) with a customized system prompt specialized in Indian household finance, SEBI disclaimers, and vernacular financial advice.
-
-### Step 3: Cloud / Household Multi-Device Sync (Optional)
-- While the offline-first IndexedDB architecture is rock-solid, users may want to share their Shagun gift book or debt register with their spouse or children across devices.
-- **Tasks:**
-  - Implement optional Google Drive backup or Supabase / Firebase encrypted synchronization using the existing CSV/JSON export schema.
+1. **Google Play Store Release:** Sign the APK with a production keystore (`./gradlew assembleRelease` or bundle `.aab`) to publish on the Google Play Store.
+2. **Cloud Encrypted Sync (Google Drive / Firebase):** Automated daily sync of the JSON backup payload to Google Drive without manual file exports.
+3. **Receipt OCR:** Use Gemini Vision API to auto-scan paper bills or gold receipts and fill transaction fields automatically.
 
 ---
 
 ## 5. OPERATIONAL INSTRUCTIONS FOR AGENTS
 
-1. **Operating System:** Windows. Shell commands must run via `cmd.exe /c "..."` or PowerShell without interactive prompts.
-2. **Coding Standards:** Maintain the clean, minimalist Hema Gold theme. Never introduce heavy third-party UI component libraries that break Vite's bundler. Use existing Tailwind tokens.
-3. **Preserve Offline Integrity:** Core operations (Transactions, Gifts, Debts, Proofs) **must never require an internet connection** to function.
-4. **Git Remote:** Origin is linked to `https://github.com/Maritot/HemaWebApp.git` on branch `master`. Always commit and push working increments cleanly.
+1. **Development Server:** Run `npm run dev` in `C:\Users\LAB2_PC14\Desktop\TharunAvula\HemaWebApp` (listening on `http://localhost:5173/`).
+2. **Android Sync & Build:**
+   ```powershell
+   npm run build
+   npx cap sync android
+   $env:JAVA_HOME = "C:\Program Files\Autopsy-4.22.1\jre"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+   cd android; .\gradlew.bat assembleDebug; cd ..
+   ```
+3. **Git Remote:** Origin is linked to `https://github.com/Maritot/HemaWebApp.git` on branch `master`.

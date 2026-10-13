@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom';
-import { Home, IndianRupee, Users, Gift, Bot } from 'lucide-react';
+import { Home, IndianRupee, Users, Gift, Bot, Lock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Dashboard from './pages/Dashboard';
 import Expenses from './pages/Expenses';
@@ -9,9 +9,25 @@ import Debts from './pages/Debts';
 import Gifts from './pages/Gifts';
 import Assistant from './pages/Assistant';
 import SettingsPage from './pages/Settings';
+import { LockScreen } from './components/LockScreen';
+import { isSessionUnlocked, lockSession, isPinEnabled } from './lib/security';
 
 const App: React.FC = () => {
   const { t } = useTranslation();
+  const [isLocked, setIsLocked] = useState(!isSessionUnlocked());
+
+  useEffect(() => {
+    const handleLock = () => {
+      lockSession();
+      setIsLocked(true);
+    };
+    window.addEventListener('hema:lock', handleLock);
+    return () => window.removeEventListener('hema:lock', handleLock);
+  }, []);
+
+  if (isLocked && isPinEnabled()) {
+    return <LockScreen onUnlock={() => setIsLocked(false)} />;
+  }
 
   return (
     <Router>
@@ -19,9 +35,23 @@ const App: React.FC = () => {
         {/* Header */}
         <header className="bg-surface shadow-sm py-4 px-6 flex justify-between items-center z-10">
           <h1 className="text-2xl font-bold text-primary-600 tracking-tight">Hema</h1>
-          <NavLink to="/settings" className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-semibold cursor-pointer">
-            US
-          </NavLink>
+          <div className="flex items-center space-x-2">
+            {isPinEnabled() && (
+              <button
+                onClick={() => {
+                  lockSession();
+                  setIsLocked(true);
+                }}
+                className="p-1.5 rounded-full hover:bg-slate-100 text-textMuted"
+                title="Lock App"
+              >
+                <Lock size={18} />
+              </button>
+            )}
+            <NavLink to="/settings" className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-semibold cursor-pointer">
+              US
+            </NavLink>
+          </div>
         </header>
 
         {/* Main Content Area */}

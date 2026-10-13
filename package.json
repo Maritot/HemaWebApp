@@ -11,6 +11,9 @@
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "autoprefixer": "^10.4.19",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",

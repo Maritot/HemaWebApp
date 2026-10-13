@@ -280,3 +280,70 @@ export const recordDebtPayment = async (debtId: string, payment: DebtPayment) =>
     await db.put('debts', debt);
   }
 };
+
+// --- Full JSON Backup & Restore ---
+export interface HemaBackupPayload {
+  version: number;
+  exportedAt: string;
+  transactions: HemaDB['transactions']['value'][];
+  people: PersonRecord[];
+  gifts: GiftTransaction[];
+  debts: DebtRecordItem[];
+}
+
+export const exportFullBackup = async (): Promise<HemaBackupPayload> => {
+  const [transactions, people, gifts, debts] = await Promise.all([
+    getTransactions(),
+    getPeople(),
+    getGifts(),
+    getDebts()
+  ]);
+
+  return {
+    version: 4,
+    exportedAt: new Date().toISOString(),
+    transactions,
+    people,
+    gifts,
+    debts
+  };
+};
+
+export const restoreFullBackup = async (payload: HemaBackupPayload): Promise<boolean> => {
+  if (!payload || !payload.version) {
+    throw new Error('Invalid Hema backup format');
+  }
+
+  const db = await initDB();
+
+  // Restore transactions
+  if (Array.isArray(payload.transactions)) {
+    for (const tx of payload.transactions) {
+      if (tx.id) await db.put('transactions', tx);
+    }
+  }
+
+  // Restore people
+  if (Array.isArray(payload.people)) {
+    for (const p of payload.people) {
+      if (p.id) await addPerson(p);
+    }
+  }
+
+  // Restore gifts
+  if (Array.isArray(payload.gifts)) {
+    for (const g of payload.gifts) {
+      if (g.id) await db.put('gifts', g);
+    }
+  }
+
+  // Restore debts
+  if (Array.isArray(payload.debts)) {
+    for (const d of payload.debts) {
+      if (d.id) await db.put('debts', d);
+    }
+  }
+
+  return true;
+};
+
