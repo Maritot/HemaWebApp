@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink, Square, Languages, RefreshCw } from 'lucide-react';
+import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink, Square, Languages, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { 
   queryGemini, 
+  queryGeminiStream,
   getGeminiApiKey, 
   setGeminiApiKey, 
   testGeminiConnection, 
@@ -18,6 +19,18 @@ import {
   FREE_TIER_MODELS
 } from '@/lib/gemini';
 
+const CHAT_HISTORY_STORAGE_KEY = 'hema_assistant_chat_history';
+
+const getInitialGreeting = (lang: string): string => {
+  if (lang === 'te') {
+    return 'నమస్కారం! నేను మీ హేమ (Hema) కుటుంబ ఆర్థిక సహాయకురాలిని. మీ గృహ బడ్జెట్, బంగారం రేట్లు, ₹2 వడ్డీ లెక్కలు లేదా పొదుపు గురించి ఏదైనా అడగండి.';
+  }
+  if (lang === 'hi') {
+    return 'नमस्ते! मैं आपकी पारिवारिक वित्तीय सहायक हेमा (Hema) हूँ। आप मुझसे घरेलू बजट, सोने के भाव, ₹2 ब्याज या बचत के बारे में कुछ भी पूछ सकते हैं।';
+  }
+  return 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, Gold investments, Vaddi interest calculations, or household tax planning.';
+};
+
 const Assistant: React.FC = () => {
   const { t } = useTranslation();
   const { text: voiceText, isListening, startListening, hasSupport, setText: setVoiceText } = useSpeechToText();
@@ -28,17 +41,30 @@ const Assistant: React.FC = () => {
   });
 
   const [input, setInput] = useState('');
+  
+  // Persisted chat history across tabs and app navigation
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const isTe = (localStorage.getItem('hema_assistant_chat_language') || 'en') === 'te';
-    const isHi = (localStorage.getItem('hema_assistant_chat_language') || 'en') === 'hi';
-    const initialGreeting = isTe 
-      ? 'నమస్కారం! నేను మీ హేమ (Hema) కుటుంబ ఆర్థిక సహాయకురాలిని. మీ గృహ బడ్జెట్, బంగారం రేట్లు, ₹2 వడ్డీ లెక్కలు లేదా పొదుపు గురించి ఏదైనా అడగండి.'
-      : isHi
-      ? 'नमस्ते! मैं आपकी पारिवारिक वित्तीय सहायक हेमा (Hema) हूँ। आप मुझसे घरेलू बजट, सोने के भाव, ₹2 ब्याज या बचत के बारे में कुछ भी पूछ सकते हैं।'
-      : 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, Gold investments, Vaddi interest calculations, or household tax planning.';
-    return [{ role: 'assistant', text: initialGreeting }];
+    try {
+      const saved = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+
+    const lang = localStorage.getItem('hema_assistant_chat_language') || 'en';
+    return [{ role: 'assistant', text: getInitialGreeting(lang) }];
   });
   const [isTyping, setIsTyping] = useState(false);
+
+  // Auto-persist messages whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(messages));
+    } catch (e) {}
+  }, [messages]);
 
   // AbortController ref for instantaneous generation cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -77,12 +103,26 @@ const Assistant: React.FC = () => {
     // Explicitly do NOT change the global app i18n language, preserving the main app's layout
   };
 
+  const handleClearChat = () => {
+    if (window.confirm('Clear chat history and start fresh?')) {
+      const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage) }];
+      setMessages(reset);
+      try {
+        localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(reset));
+      } catch (e) {}
+    }
+  };
+
   const handleSend = async (customPrompt?: string) => {
     const textToSend = (customPrompt || input).trim();
     if (!textToSend || isTyping) return;
 
-    const updatedMessages: ChatMessage[] = [...messages, { role: 'user', text: textToSend }];
-    setMessages(updatedMessages);
+    const userMsg: ChatMessage = { role: 'user', text: textToSend };
+    const emptyAssistantMsg: ChatMessage = { role: 'assistant', text: '' };
+    const historySnapshot = [...messages, userMsg];
+    const assistantMsgIndex = historySnapshot.length;
+
+    setMessages([...historySnapshot, emptyAssistantMsg]);
     setInput('');
     setVoiceText('');
     setIsTyping(true);
@@ -92,13 +132,51 @@ const Assistant: React.FC = () => {
     abortControllerRef.current = controller;
 
     try {
-      const response = await queryGemini(textToSend, updatedMessages, controller.signal, chatLanguage);
-      setMessages(prev => [...prev, { role: 'assistant', text: response }]);
+      let streamedBuffer = '';
+      const finalResponse = await queryGeminiStream(
+        textToSend, 
+        historySnapshot, 
+        (chunkText) => {
+          streamedBuffer = chunkText;
+          setMessages(prev => {
+            const copy = [...prev];
+            if (copy[assistantMsgIndex]) {
+              copy[assistantMsgIndex] = { role: 'assistant', text: chunkText };
+            }
+            return copy;
+          });
+        },
+        controller.signal, 
+        chatLanguage
+      );
+
+      // If streaming wasn't supported, use final response
+      if (!streamedBuffer && finalResponse) {
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy[assistantMsgIndex]) {
+            copy[assistantMsgIndex] = { role: 'assistant', text: finalResponse };
+          }
+          return copy;
+        });
+      }
     } catch (e: any) {
       if (e.name === 'AbortError' || controller.signal.aborted) {
-        setMessages(prev => [...prev, { role: 'assistant', text: '⏹ Response stopped by user.' }]);
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy[assistantMsgIndex] && !copy[assistantMsgIndex].text) {
+            copy[assistantMsgIndex] = { role: 'assistant', text: '⏹ Response stopped by user.' };
+          }
+          return copy;
+        });
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', text: 'I encountered an issue processing that. Please try again.' }]);
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy[assistantMsgIndex]) {
+            copy[assistantMsgIndex] = { role: 'assistant', text: 'I encountered an issue processing that. Please try again.' };
+          }
+          return copy;
+        });
       }
     } finally {
       setIsTyping(false);
@@ -192,17 +270,28 @@ const Assistant: React.FC = () => {
             {hasApiKey ? getActiveModelShortName() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.6
+            v1.7
           </span>
         </div>
-        <button
-          type="button"
-          onClick={handleOpenSettingsModal}
-          className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
-        >
-          <Key size={12} />
-          <span>{hasApiKey ? 'Change Key / Model' : 'Connect Gemini'}</span>
-        </button>
+        <div className="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onClick={handleClearChat}
+            className="flex items-center space-x-1 text-[11px] font-bold text-textMuted hover:text-red-600 bg-white px-2 py-1 rounded-lg border border-primary-200 shadow-2xs transition-colors"
+            title="Clear conversation history"
+          >
+            <Trash2 size={11} />
+            <span className="hidden xs:inline">Clear</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenSettingsModal}
+            className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
+          >
+            <Key size={12} />
+            <span>{hasApiKey ? 'Change Key / Model' : 'Connect Gemini'}</span>
+          </button>
+        </div>
       </div>
 
       {/* ================= 3. SEBI COMPLIANCE BANNER ================= */}

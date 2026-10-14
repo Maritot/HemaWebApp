@@ -366,8 +366,11 @@ ENTERPRISE PRODUCTION GUARDRAILS:
       const cleanPayload = {
         contents,
         generationConfig: {
-          temperature: 0.65,
-          maxOutputTokens: 1000
+          temperature: 0.6,
+          maxOutputTokens: 800,
+          thinkingConfig: {
+            thinkingBudget: 0
+          }
         }
       };
 
@@ -421,6 +424,133 @@ ENTERPRISE PRODUCTION GUARDRAILS:
 
   // If all free-tier models failed due to demand spikes or connectivity:
   return `⚠️ Gemini Free-Tier notice: ${lastErrorMessage || 'Service busy'}. Providing verified local ledger guidance:\n\n${generateLocalFinancialAdvice(prompt, ragContext, chatLanguage)}`;
+};
+
+/**
+ * Ultra-Fast Streaming Query Engine:
+ * 1. Uses Gemini streamGenerateContent?alt=sse for instant <400ms time-to-first-token.
+ * 2. thinkingBudget: 0 disables multi-second reasoning pauses.
+ * 3. Calls onChunk callback in real-time as text streams in.
+ * 4. Multi-model automatic failover if primary encounters 503/429 spikes.
+ */
+export const queryGeminiStream = async (
+  prompt: string, 
+  history: ChatMessage[] = [],
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal,
+  chatLanguage: string = 'en'
+): Promise<string> => {
+  const apiKey = getGeminiApiKey();
+  const ragContext = await buildHouseholdRAGContext(prompt);
+
+  if (!apiKey) {
+    const local = generateLocalFinancialAdvice(prompt, ragContext, chatLanguage);
+    onChunk(local);
+    return local;
+  }
+
+  let languageDirective = '';
+  if (chatLanguage === 'te') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
+  } else if (chatLanguage === 'hi') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
+  } else {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
+  }
+
+  const systemPrompt = `You are Hema, a wise, caring, and practical financial assistant designed for Indian households and families.
+${ragContext}
+${languageDirective}
+
+ENTERPRISE PRODUCTION GUARDRAILS:
+1. SEBI Regulatory Compliance: All insights are strictly for educational and household management purposes. Do not give speculative stock trading calls or guaranteed return promises. Include brief disclaimer when discussing investments.
+2. Fraud & Scam Guardrail: If user mentions suspicious lottery messages, doubling money, telegram tasks, or sharing OTPs/PINs, strongly warn them to never share OTP or transfer money, and advise reporting to cybercrime.gov.in (Helpline: 1930).
+3. Informal Vaddi & Debt Priority: When households carry informal high-interest loans (e.g. ₹2 or ₹3 Vaddi monthly = 24-36% annual), advise prioritizing repayment before discretionary luxury spending.
+4. Tone: Respectful, culturally attuned, warm, structured with bullet points.`;
+
+  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
+  const primaryModel = getActiveModelName();
+  const fallbackList = FREE_TIER_MODELS.map(m => m.name).filter(m => m !== primaryModel);
+  const modelsToTry = [primaryModel, ...fallbackList];
+
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const currentModel = modelsToTry[i];
+
+    if (signal?.aborted) {
+      return "*(Generation stopped by user)*";
+    }
+
+    try {
+      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+      const cleanPayload = {
+        contents,
+        generationConfig: {
+          temperature: 0.6,
+          maxOutputTokens: 800,
+          thinkingConfig: {
+            thinkingBudget: 0
+          }
+        }
+      };
+
+      const response = await fetch(streamUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanPayload),
+        signal
+      });
+
+      if (response.ok && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let accumulatedText = '';
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data:')) {
+              const jsonString = trimmed.replace(/^data:\s*/, '');
+              if (jsonString) {
+                try {
+                  const chunkObj = JSON.parse(jsonString);
+                  const textChunk = chunkObj.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (textChunk) {
+                    accumulatedText += textChunk;
+                    onChunk(accumulatedText);
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+        }
+
+        if (accumulatedText.trim()) {
+          return accumulatedText.trim();
+        }
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError' || signal?.aborted) {
+        return "*(Generation stopped by user)*";
+      }
+      if (i < modelsToTry.length - 1) {
+        continue;
+      }
+    }
+  }
+
+  // Fallback to non-streaming queryGemini if streaming had issues
+  const fallbackResult = await queryGemini(prompt, history, signal, chatLanguage);
+  onChunk(fallbackResult);
+  return fallbackResult;
 };
 
 /**
