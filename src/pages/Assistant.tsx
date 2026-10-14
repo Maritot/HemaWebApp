@@ -3,7 +3,7 @@ import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink } 
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
-import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, getActiveTargetInfo, ChatMessage } from '@/lib/gemini';
+import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, getActiveModelName, setActiveModelName, fetchAvailableModels, AvailableModel, ChatMessage } from '@/lib/gemini';
 
 const Assistant: React.FC = () => {
   const { t } = useTranslation();
@@ -24,6 +24,8 @@ const Assistant: React.FC = () => {
   const [hasApiKey, setHasApiKey] = useState(!!getGeminiApiKey());
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(getActiveModelName());
 
   // Sync voice input with text input
   useEffect(() => {
@@ -67,16 +69,20 @@ const Assistant: React.FC = () => {
           <Sparkles size={15} className="text-primary-600" />
           <span>Hema AI Engine</span>
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
-            {hasApiKey ? getActiveTargetInfo() : 'Local AI'}
+            {hasApiKey ? getActiveModelName() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.2
+            v1.3
           </span>
         </div>
         <button
-          onClick={() => {
+          onClick={async () => {
             setTestResult(null);
             setShowKeyModal(true);
+            if (apiKeyInput.trim()) {
+              const models = await fetchAvailableModels(apiKeyInput.trim());
+              setAvailableModels(models);
+            }
           }}
           className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
         >
@@ -232,8 +238,14 @@ const Assistant: React.FC = () => {
                     setIsTesting(true);
                     setTestResult(null);
                     clearGeminiCache();
-                    const res = await testGeminiConnection(apiKeyInput);
+                    const res = await testGeminiConnection(apiKeyInput, selectedModel);
                     setTestResult(res);
+                    if (res.availableModels && res.availableModels.length > 0) {
+                      setAvailableModels(res.availableModels);
+                    }
+                    if (res.model) {
+                      setSelectedModel(res.model);
+                    }
                     setIsTesting(false);
                   }}
                   className="text-primary-700 font-bold hover:underline disabled:opacity-50"
@@ -241,6 +253,26 @@ const Assistant: React.FC = () => {
                   {isTesting ? 'Testing...' : 'Test Connection'}
                 </button>
               </div>
+
+              {availableModels.length > 0 && (
+                <div className="pt-2">
+                  <label className="text-[11px] font-semibold text-textMuted">Active Gemini Model</label>
+                  <select
+                    value={selectedModel}
+                    onChange={e => {
+                      setSelectedModel(e.target.value);
+                      setActiveModelName(e.target.value);
+                    }}
+                    className="w-full mt-1 p-2 bg-background rounded-xl border border-borderLight text-xs font-semibold text-textMain outline-none"
+                  >
+                    {availableModels.map(m => (
+                      <option key={m.name} value={m.name}>
+                        {m.displayName} ({m.name.replace(/^models\//, '')})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="flex space-x-2 pt-2">
                 <button
