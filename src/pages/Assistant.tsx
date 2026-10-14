@@ -49,7 +49,11 @@ const getInitialGreeting = (lang: string): string => {
   return 'Namaste! I am Hema, your household financial companion. Ask me anything about gold rates, informal ₹ Vaddi calculations, or family budgeting.';
 };
 
-const Assistant: React.FC = () => {
+interface AssistantProps {
+  isKeyboardOpen?: boolean;
+}
+
+const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
   const { t } = useTranslation();
   const { text: voiceText, isListening, startListening, hasSupport, setText: setVoiceText } = useSpeechToText();
 
@@ -60,6 +64,7 @@ const Assistant: React.FC = () => {
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showCompliance, setShowCompliance] = useState(true);
   
   // Persisted chat history across tabs and app navigation
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -78,8 +83,13 @@ const Assistant: React.FC = () => {
   });
   const [isTyping, setIsTyping] = useState(false);
 
-  // Auto-scroll ref
+  // Auto-scroll ref and input ref
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  };
 
   // Auto-persist messages whenever they change
   useEffect(() => {
@@ -90,8 +100,21 @@ const Assistant: React.FC = () => {
 
   // Smooth scroll to bottom on new messages or streaming chunks
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom('smooth');
   }, [messages, isTyping]);
+
+  // When keyboard opens or closes, ensure scroll to latest message
+  useEffect(() => {
+    if (isKeyboardOpen) {
+      scrollToBottom('smooth');
+      const t1 = setTimeout(() => scrollToBottom('smooth'), 120);
+      const t2 = setTimeout(() => scrollToBottom('smooth'), 300);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [isKeyboardOpen]);
 
   // AbortController ref for instantaneous generation cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -154,6 +177,12 @@ const Assistant: React.FC = () => {
     }
   };
 
+  const handleInputFocus = () => {
+    scrollToBottom('smooth');
+    setTimeout(() => scrollToBottom('smooth'), 120);
+    setTimeout(() => scrollToBottom('smooth'), 300);
+  };
+
   const handleSend = async (customPrompt?: string) => {
     const textToSend = (customPrompt || input).trim();
     if (!textToSend || isTyping) return;
@@ -190,7 +219,6 @@ const Assistant: React.FC = () => {
         chatLanguage
       );
 
-      // Fallback update if streaming was empty
       if (!streamedBuffer && finalResponse) {
         setMessages(prev => {
           const copy = [...prev];
@@ -329,104 +357,107 @@ const Assistant: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col h-[calc(100vh-140px)] animate-in fade-in slide-in-from-bottom-4 duration-500 pb-2">
+    <div className="flex flex-col flex-1 min-h-0 h-full w-full overflow-hidden select-none">
       
-      {/* ================= 1. CHATBOT RESPONSE LANGUAGE SLIDER (BOT-ONLY) ================= */}
-      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-1.5 shadow-2xs shrink-0">
-        <div className="flex items-center space-x-1.5 text-xs font-bold text-primary-950 pl-2">
-          <Languages size={15} className="text-primary-600" />
-          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Language:</span>
+      {/* ================= 1. COMPACT UNIFIED TOP CONTROL BAR ================= */}
+      <div className="bg-white border border-primary-100 rounded-2xl p-1.5 sm:p-2 mb-1.5 shadow-2xs shrink-0 flex flex-col gap-1">
+        {/* Main Header Row */}
+        <div className="flex items-center justify-between">
+          {/* Language Switcher */}
+          <div className="flex items-center space-x-1.5">
+            <Languages size={13} className="text-primary-600 shrink-0" />
+            <div className="flex items-center space-x-0.5 bg-primary-50/80 p-0.5 rounded-lg border border-primary-200/50">
+              {chatLanguages.map(lang => {
+                const isActive = chatLanguage === lang.code;
+                return (
+                  <button
+                    key={lang.code}
+                    type="button"
+                    onClick={() => handleLanguageSelect(lang.code)}
+                    className={cn(
+                      "px-2 py-0.5 rounded-md text-[10px] sm:text-[11px] font-extrabold transition-all",
+                      isActive
+                        ? "bg-primary-600 text-white shadow-2xs"
+                        : "text-textMuted hover:text-textMain hover:bg-white/60"
+                    )}
+                    title={`AI replies in ${lang.label}`}
+                  >
+                    {lang.short}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Status & Actions */}
+          <div className="flex items-center space-x-1.5">
+            <button
+              type="button"
+              onClick={handleOpenSettingsModal}
+              className="flex items-center space-x-1 text-[10px] sm:text-[11px] font-bold text-primary-700 bg-primary-50/90 hover:bg-primary-100 px-2 py-0.5 rounded-lg border border-primary-200/60 shadow-2xs transition-colors"
+              title="Change model or API key"
+            >
+              <Sparkles size={11} className="text-primary-600 shrink-0" />
+              <span className="max-w-[100px] truncate">
+                {hasApiKey ? getActiveModelShortName() : 'Local AI'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleClearChat}
+              className="p-1 text-textMuted hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200"
+              title="Clear conversation"
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center space-x-1 bg-primary-50/70 p-0.5 rounded-xl border border-primary-200/50">
-          {chatLanguages.map(lang => {
-            const isActive = chatLanguage === lang.code;
-            return (
-              <button
-                key={lang.code}
-                type="button"
-                onClick={() => handleLanguageSelect(lang.code)}
-                className={cn(
-                  "px-3 py-1 rounded-lg text-xs font-extrabold transition-all flex items-center space-x-1",
-                  isActive
-                    ? "bg-primary-600 text-white shadow-xs"
-                    : "text-textMuted hover:text-textMain hover:bg-white/60"
-                )}
-                title={`Translate chatbot answers into ${lang.label}`}
-              >
-                <span>{lang.short}</span>
-                <span className="text-[10px] opacity-85 font-normal">({lang.label})</span>
-              </button>
-            );
-          })}
-        </div>
+
+        {/* Dismissible SEBI Compliance Pill */}
+        {showCompliance && (
+          <div className="flex items-center justify-between bg-amber-50/70 border border-amber-200/60 px-2 py-0.5 rounded-lg text-amber-950 text-[10px]">
+            <div className="flex items-center space-x-1 truncate mr-1.5">
+              <AlertTriangle size={11} className="shrink-0 text-amber-700" />
+              <span className="truncate">{t('assistant.compliance')}</span>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => setShowCompliance(false)}
+              className="text-amber-800 hover:text-amber-950 font-bold shrink-0 text-xs px-1 leading-none"
+              title="Dismiss note"
+            >
+              ×
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* ================= 2. TOP BANNER & GEMINI STATUS PILL ================= */}
-      <div className="flex items-center justify-between bg-primary-50/90 border border-primary-200 px-3.5 py-2 rounded-xl mb-2 shrink-0 shadow-2xs">
-        <div className="flex items-center space-x-2 text-xs font-semibold text-primary-950">
-          <Sparkles size={15} className="text-primary-600" />
-          <span>Hema AI</span>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-amber-100 text-amber-800 border border-amber-200'}`}>
-            {hasApiKey ? getActiveModelShortName() : 'Local AI'}
-          </span>
-          <span className="text-[10px] bg-primary-200/90 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.8
-          </span>
-        </div>
-        <div className="flex items-center space-x-1.5">
-          <button
-            type="button"
-            onClick={handleClearChat}
-            className="flex items-center space-x-1 text-[11px] font-bold text-textMuted hover:text-red-600 bg-white px-2 py-1 rounded-lg border border-primary-200 shadow-2xs transition-colors"
-            title="Clear conversation history"
-          >
-            <Trash2 size={11} />
-            <span className="hidden xs:inline">Clear</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleOpenSettingsModal}
-            className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-2xs hover:shadow-xs transition-all"
-          >
-            <Key size={12} />
-            <span>{hasApiKey ? 'Key & Model' : 'Connect Gemini'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* ================= 3. SEBI COMPLIANCE BANNER ================= */}
-      <div className="bg-amber-50/70 border border-amber-200/80 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2 shadow-2xs shrink-0">
-        <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-700" />
-        <p className="text-[10px] leading-relaxed text-amber-950">
-          {t('assistant.compliance')}
-        </p>
-      </div>
-
-      {/* ================= 4. CHAT HISTORY ================= */}
-      <div className="flex-1 overflow-y-auto space-y-3.5 pb-3 px-1 scrollbar-hide">
+      {/* ================= 2. CHAT MESSAGE LIST (AUTO-SCROLLING, RESIZABLE) ================= */}
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pb-2 px-1 scrollbar-hide select-text">
         {messages.length === 1 && (
-          <div className="p-3 bg-primary-50/40 rounded-2xl border border-primary-150 mb-2">
+          <div className="p-2.5 bg-primary-50/40 rounded-2xl border border-primary-150 mb-2">
             <p className="text-xs font-bold text-primary-900 mb-2 flex items-center">
-              <Sparkles size={13} className="mr-1 text-primary-600" />
+              <Sparkles size={12} className="mr-1 text-primary-600" />
               Suggested Queries:
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
               {quickPrompts.map((qp, idx) => {
                 const IconComponent = qp.icon;
                 return (
                   <button
                     key={idx}
                     onClick={() => handleSend(qp.query)}
-                    className="text-left p-2.5 bg-white hover:bg-primary-50/60 rounded-xl border border-primary-200/70 hover:border-primary-400 text-slate-800 transition-all shadow-2xs group flex items-start space-x-2.5"
+                    className="text-left p-2 bg-white hover:bg-primary-50/60 rounded-xl border border-primary-200/70 hover:border-primary-400 text-slate-800 transition-all shadow-2xs group flex items-start space-x-2"
                   >
-                    <div className="w-7 h-7 rounded-lg bg-primary-100/70 text-primary-700 flex items-center justify-center shrink-0 mt-0.5 group-hover:bg-primary-600 group-hover:text-white transition-colors">
-                      <IconComponent size={14} />
+                    <div className="w-6 h-6 rounded-lg bg-primary-100/70 text-primary-700 flex items-center justify-center shrink-0 mt-0.5 group-hover:bg-primary-600 group-hover:text-white transition-colors">
+                      <IconComponent size={13} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-slate-900 group-hover:text-primary-900 leading-tight">
+                      <p className="text-[11px] font-bold text-slate-900 group-hover:text-primary-900 leading-tight">
                         {qp.title}
                       </p>
-                      <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                      <p className="text-[9px] text-slate-500 mt-0.5 truncate">
                         {qp.desc}
                       </p>
                     </div>
@@ -446,28 +477,23 @@ const Assistant: React.FC = () => {
             )}
           >
             {msg.role === 'user' ? (
-              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-xs bg-gradient-to-r from-primary-600 to-primary-700 text-white px-3.5 py-2.5 sm:px-4 sm:py-3 shadow-soft">
+              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-xs bg-gradient-to-r from-primary-600 to-primary-700 text-white px-3.5 py-2 sm:px-4 sm:py-2.5 shadow-soft">
                 <p className="text-xs sm:text-sm font-medium leading-relaxed whitespace-pre-wrap break-words">
                   {msg.text}
                 </p>
               </div>
             ) : (
-              <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-4 text-slate-800">
+              <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-3.5 text-slate-800">
                 {/* Assistant Card Header */}
                 <div className="flex items-center justify-between border-b border-primary-100/70 pb-1.5 mb-2">
                   <div className="flex items-center space-x-1.5">
-                    <div className="w-5 h-5 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
-                      <Sparkles size={11} />
+                    <div className="w-4 h-4 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
+                      <Sparkles size={10} />
                     </div>
                     <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
                     <span className="text-[9px] bg-primary-50 text-primary-800 font-extrabold px-1.5 py-0.2 rounded border border-primary-200/60 uppercase">
                       {chatLanguage}
                     </span>
-                    {hasApiKey && (
-                      <span className="hidden xs:inline-block text-[9px] text-slate-400 font-medium">
-                        · {getActiveModelShortName()}
-                      </span>
-                    )}
                   </div>
 
                   {/* Copy Action */}
@@ -515,94 +541,98 @@ const Assistant: React.FC = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ================= 5. FLOATING STOP GENERATION BUTTON ================= */}
+      {/* ================= 3. FLOATING STOP GENERATION BUTTON ================= */}
       {isTyping && (
-        <div className="flex justify-center mb-1.5 animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="flex justify-center mb-1 animate-in fade-in slide-in-from-bottom-2 duration-200 shrink-0">
           <button
             type="button"
             onClick={handleStop}
-            className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full text-xs font-bold shadow-md active:scale-95 transition-all"
+            className="flex items-center space-x-1.5 px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-full text-[11px] font-bold shadow-md active:scale-95 transition-all"
           >
-            <Square size={11} className="fill-white" />
+            <Square size={10} className="fill-white" />
             <span>Stop Generating</span>
           </button>
         </div>
       )}
 
-      {/* ================= 6. INPUT AREA ================= */}
-      <div className="pt-1 shrink-0 bg-background">
-        <div className="flex items-center space-x-2">
+      {/* ================= 4. COMPACT SEAMLESS INPUT BAR ================= */}
+      <div className="shrink-0 pt-1 pb-1 px-0.5 bg-background">
+        <div className="flex items-center space-x-1.5 bg-white border border-primary-200/90 rounded-full px-2 py-1 shadow-2xs focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-400 transition-all">
           {hasSupport && (
             <button 
               type="button"
               onClick={startListening}
               className={cn(
-                "p-3 border rounded-full shadow-xs active:scale-95 transition-colors",
-                isListening ? "bg-red-100 border-red-200 text-red-600 animate-pulse" : "bg-surface border-borderLight text-primary-600"
+                "p-1.5 rounded-full transition-colors shrink-0",
+                isListening ? "bg-red-100 text-red-600 animate-pulse" : "text-primary-600 hover:bg-primary-50"
               )}
               title="Speak in your language"
             >
-              <Mic size={18} />
+              <Mic size={16} />
             </button>
           )}
-          <div className="flex-1 relative">
-            <input 
-              type="text" 
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={t('assistant.placeholder')}
-              className="w-full bg-surface border border-borderLight rounded-full py-3 pl-4 pr-12 text-xs sm:text-sm focus:outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 shadow-xs"
-            />
-            {isTyping ? (
-              <button 
-                type="button"
-                onClick={handleStop}
-                className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-full transition-colors flex items-center justify-center shadow-xs"
-                title="Stop Generating"
-              >
-                <Square size={13} className="fill-white" />
-              </button>
-            ) : (
-              <button 
-                type="button"
-                onClick={() => handleSend()}
-                disabled={!input.trim()}
-                className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-40 transition-colors flex items-center justify-center shadow-xs"
-              >
-                <Send size={15} />
-              </button>
-            )}
-          </div>
+
+          <input 
+            ref={inputRef}
+            type="text" 
+            value={input}
+            onFocus={handleInputFocus}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            placeholder={
+              chatLanguage === 'te' 
+                ? 'హేమను ఏదైనా అడగండి...' 
+                : chatLanguage === 'hi' 
+                  ? 'हेमा से कुछ भी पूछें...' 
+                  : 'Ask Hema anything...'
+            }
+            className="flex-1 bg-transparent py-1 px-1.5 text-xs sm:text-sm text-slate-800 focus:outline-none placeholder:text-slate-400 min-w-0"
+          />
+
+          {isTyping ? (
+            <button 
+              type="button"
+              onClick={handleStop}
+              className="p-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full transition-colors flex items-center justify-center shrink-0 shadow-2xs"
+              title="Stop Generating"
+            >
+              <Square size={12} className="fill-white" />
+            </button>
+          ) : (
+            <button 
+              type="button"
+              onClick={() => handleSend()}
+              disabled={!input.trim()}
+              className="p-1.5 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-40 transition-colors flex items-center justify-center shrink-0 shadow-2xs"
+            >
+              <Send size={13} />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* ================= 7. MODAL: GEMINI API KEY & MODEL SETTINGS ================= */}
+      {/* ================= 5. MODAL: GEMINI API KEY & MODEL SETTINGS ================= */}
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-sm bg-surface rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 border border-borderLight">
-            <div className="flex justify-between items-center mb-4">
+          <div className="w-full max-w-sm bg-surface rounded-2xl shadow-2xl p-5 animate-in zoom-in-95 border border-borderLight">
+            <div className="flex justify-between items-center mb-3">
               <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center">
-                  <Key size={16} />
+                <div className="w-7 h-7 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center">
+                  <Key size={14} />
                 </div>
                 <div>
-                  <h3 className="font-bold text-textMain text-sm">Google Gemini AI Engine</h3>
-                  <p className="text-[11px] text-textMuted">Free Tier & Ledger Grounding</p>
+                  <h3 className="font-bold text-textMain text-xs sm:text-sm">Google Gemini AI Engine</h3>
+                  <p className="text-[10px] text-textMuted">Free Tier & Ledger Grounding</p>
                 </div>
               </div>
               <button onClick={() => setShowKeyModal(false)} className="text-textMuted hover:text-textMain p-1">
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
 
-            <div className="space-y-3.5">
-              <p className="text-xs text-textMuted leading-relaxed">
-                Connect your Google Gemini API key to enable live, conversational intelligence grounded in your household finances.
-              </p>
-
+            <div className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-textMuted">Gemini API Key</label>
+                <label className="text-[11px] font-semibold text-textMuted">Gemini API Key</label>
                 <input 
                   type="password"
                   value={apiKeyInput}
@@ -611,13 +641,13 @@ const Assistant: React.FC = () => {
                     setTestResult(null);
                   }}
                   placeholder="AIzaSy..."
-                  className="w-full mt-1 p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs font-mono"
+                  className="w-full mt-1 p-2.5 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs font-mono"
                 />
               </div>
 
               {testResult && (
                 <div className={cn(
-                  "p-2.5 rounded-xl text-[11px] leading-relaxed border",
+                  "p-2 rounded-xl text-[10px] leading-relaxed border",
                   testResult.success 
                     ? "bg-green-50 border-green-200 text-green-800 font-semibold" 
                     : "bg-amber-50 border-amber-200 text-amber-900"
@@ -626,15 +656,15 @@ const Assistant: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex items-center justify-between text-[11px] pt-0.5">
+              <div className="flex items-center justify-between text-[10px] pt-0.5">
                 <a 
                   href="https://aistudio.google.com/app/apikey" 
                   target="_blank" 
                   rel="noreferrer"
                   className="text-primary-600 font-bold hover:underline flex items-center"
                 >
-                  <span>Get Free Key at Google AI Studio</span>
-                  <ExternalLink size={10} className="ml-1" />
+                  <span>Google AI Studio Key</span>
+                  <ExternalLink size={9} className="ml-1" />
                 </a>
 
                 <button
@@ -659,7 +689,7 @@ const Assistant: React.FC = () => {
                 >
                   {isTesting ? (
                     <>
-                      <RefreshCw size={11} className="animate-spin" />
+                      <RefreshCw size={10} className="animate-spin" />
                       <span>Testing...</span>
                     </>
                   ) : (
@@ -669,11 +699,11 @@ const Assistant: React.FC = () => {
               </div>
 
               {/* Verified Free-Tier Model Dropdown */}
-              <div className="pt-2">
+              <div className="pt-1">
                 <div className="flex justify-between items-center">
-                  <label className="text-[11px] font-bold text-textMain">Active Free-Tier Model</label>
-                  <span className="text-[10px] text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded-md border border-green-200">
-                    Auto-Failover Enabled
+                  <label className="text-[10px] font-bold text-textMain">Active Free-Tier Model</label>
+                  <span className="text-[9px] text-green-700 font-semibold bg-green-50 px-1 py-0.2 rounded border border-green-200">
+                    Auto-Failover
                   </span>
                 </div>
                 <select
@@ -683,7 +713,7 @@ const Assistant: React.FC = () => {
                     setSelectedModel(newModel);
                     setActiveModelName(newModel);
                   }}
-                  className="w-full mt-1.5 p-2.5 bg-background rounded-xl border border-borderLight text-xs font-semibold text-textMain outline-none focus:border-primary-400"
+                  className="w-full mt-1 p-2 bg-background rounded-xl border border-borderLight text-xs font-semibold text-textMain outline-none focus:border-primary-400"
                 >
                   {availableModels.map(m => (
                     <option key={m.name} value={m.name}>
@@ -691,9 +721,6 @@ const Assistant: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <p className="text-[10px] text-textMuted mt-1">
-                  💡 If Google experiences temporary high demand, Hema automatically fails over across free-tier models to keep responding.
-                </p>
               </div>
 
               <div className="flex space-x-2 pt-2">
@@ -705,14 +732,14 @@ const Assistant: React.FC = () => {
                     setHasApiKey(false);
                     setShowKeyModal(false);
                   }}
-                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-textMuted font-bold rounded-xl text-xs transition-colors"
+                  className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-textMuted font-bold rounded-xl text-xs transition-colors"
                 >
                   Clear Key
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveApiKey}
-                  className="flex-1 py-2.5 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs transition-colors shadow-soft"
+                  className="flex-1 py-2 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs transition-colors shadow-soft"
                 >
                   Save & Connect
                 </button>
