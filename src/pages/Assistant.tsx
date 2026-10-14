@@ -3,7 +3,7 @@ import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink } 
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
-import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, ChatMessage } from '@/lib/gemini';
+import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, getActiveTargetInfo, ChatMessage } from '@/lib/gemini';
 
 const Assistant: React.FC = () => {
   const { t } = useTranslation();
@@ -67,10 +67,10 @@ const Assistant: React.FC = () => {
           <Sparkles size={15} className="text-primary-600" />
           <span>Hema AI Engine</span>
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
-            {hasApiKey ? 'Gemini Live' : 'Local AI'}
+            {hasApiKey ? getActiveTargetInfo() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.1
+            v1.2
           </span>
         </div>
         <button

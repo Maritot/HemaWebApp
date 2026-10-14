@@ -37,16 +37,70 @@ export const clearGeminiCache = (): void => {
   localStorage.removeItem(ACTIVE_TARGET_STORAGE);
 };
 
+export const getActiveTargetInfo = (): string => {
+  try {
+    const cached = localStorage.getItem(ACTIVE_TARGET_STORAGE);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      return `${parsed.model} (${parsed.apiVersion})`;
+    }
+  } catch (e) {}
+  return 'Gemini Live';
+};
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
 }
 
 /**
+ * Builds a strictly alternating Gemini payload:
+ * 1. Guarantees first turn has role: 'user'
+ * 2. Alternates strictly between 'user' and 'model'
+ * 3. Never produces consecutive same-role turns
+ * 4. Injects household system context cleanly into the conversation
+ */
+export function buildStrictGeminiPayload(
+  systemPrompt: string, 
+  prompt: string, 
+  rawHistory: ChatMessage[] = []
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  // Find first message spoken by the actual user
+  const firstUserIdx = rawHistory.findIndex(m => m.role === 'user');
+  const pastTurns = firstUserIdx !== -1 ? rawHistory.slice(firstUserIdx) : [];
+
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  let expectedRole: 'user' | 'model' = 'user';
+  for (const turn of pastTurns) {
+    const role: 'user' | 'model' = turn.role === 'assistant' ? 'model' : 'user';
+    if (role === expectedRole) {
+      contents.push({ role, parts: [{ text: turn.text }] });
+      expectedRole = expectedRole === 'user' ? 'model' : 'user';
+    }
+  }
+
+  // Ensure prompt is appended as final user turn
+  if (contents.length === 0 || contents[contents.length - 1].role === 'model') {
+    contents.push({
+      role: 'user',
+      parts: [{ text: prompt }]
+    });
+  } else {
+    // If the last item was user, make sure it matches the current prompt
+    contents[contents.length - 1].parts[0].text = prompt;
+  }
+
+  // Prepend the system instructions to the first user turn so it works universally across all versions
+  contents[0].parts[0].text = `${systemPrompt}\n\n[User Question]: ${contents[0].parts[0].text}`;
+
+  return contents;
+}
+
+/**
  * Discover working models by querying both v1 and v1beta ModelService endpoints
  */
 export const discoverWorkingTarget = async (apiKey: string): Promise<EndpointTarget> => {
-  // Check cached target
   try {
     const cached = localStorage.getItem(ACTIVE_TARGET_STORAGE);
     if (cached) {
@@ -111,6 +165,8 @@ export const testGeminiConnection = async (apiKey: string): Promise<{ success: b
   const cleanKey = apiKey.trim();
   const testPrompt = [{ role: 'user', parts: [{ text: 'Respond with the single word: READY' }] }];
 
+  let lastErrMsg = '';
+
   for (const target of ENDPOINT_TARGETS) {
     try {
       const url = `https://generativelanguage.googleapis.com/${target.apiVersion}/models/${target.model}:generateContent?key=${cleanKey}`;
@@ -128,24 +184,25 @@ export const testGeminiConnection = async (apiKey: string): Promise<{ success: b
           return {
             success: true,
             model: `${target.model} (${target.apiVersion})`,
-            message: `Connected successfully to Google Gemini (${target.model} on ${target.apiVersion})!`
+            message: `✅ Connected successfully: ${target.model} on ${target.apiVersion}`
           };
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
         const errMsg = errJson.error?.message || `HTTP ${res.status}`;
+        lastErrMsg = errMsg;
         if (res.status === 400 && errMsg.includes('API key not valid')) {
-          return { success: false, message: 'Invalid API key. Please check your Google AI Studio key.' };
+          return { success: false, message: '❌ Invalid API key. Please check your Google AI Studio key.' };
         }
       }
     } catch (e: any) {
-      // Continue checking next candidate
+      lastErrMsg = e.message;
     }
   }
 
   return { 
     success: false, 
-    message: 'Could not connect to Gemini models. Falling back to local offline financial assistant.' 
+    message: `❌ Connection failed (${lastErrMsg}). Check network or API key.` 
   };
 };
 
@@ -172,35 +229,20 @@ export const queryGemini = async (prompt: string, history: ChatMessage[] = []): 
     const weOwe = pendingDebts.filter(d => d.type === 'WE_OWE').reduce((s, d) => s + (d.amount || d.principalAmount || 0), 0);
     const owedToUs = pendingDebts.filter(d => d.type === 'OWED_TO_US').reduce((s, d) => s + (d.amount || d.principalAmount || 0), 0);
 
-    contextSnippet = `\n[Current User Household Context: Total Income Recorded: ₹${totalIncome}, Total Expenses: ₹${totalExpense}, Current Net: ₹${totalIncome - totalExpense}, Outstanding Borrowed (We Owe): ₹${weOwe}, Outstanding Lent (Owed to Us): ₹${owedToUs}, Total Gifts Logged: ${gifts.length}]`;
+    contextSnippet = `\n[Household Finances: Recorded Income: ₹${totalIncome}, Expenses: ₹${totalExpense}, Net: ₹${totalIncome - totalExpense}, We Owe: ₹${weOwe}, Owed to Us: ₹${owedToUs}, Gifts Logged: ${gifts.length}]`;
   } catch (e) {
     // Context fallback
   }
 
   const systemPrompt = `You are Hema, a wise, caring, and practical financial assistant designed for Indian households and parents.
-Your goals:
-1. Provide warm, accessible, culturally accurate household financial guidance (Gold vs FDs, Indian bank savings, traditional monthly Vaddi interest, Shagun gift etiquette, monthly grocery/kirana budgeting, SEBI-compliant general guidance).
+Guidance:
+1. Provide warm, accessible, culturally accurate household guidance (Gold, Indian bank savings, informal monthly Vaddi interest, Shagun gift etiquette, grocery budgets).
 2. Use respectful, warm phrasing ("Namaste", "Sure", etc.).
-3. When discussing investments, always include a brief disclaimer: "(Disclaimer: Provided for educational purposes only; not SEBI investment advice)."
-4. Keep answers concise, readable, and well-structured with bullet points where appropriate.${contextSnippet}`;
+3. When discussing investments, add brief disclaimer: "(Provided for educational purposes only; not SEBI investment advice)."
+4. Keep answers concise, readable, and structured with bullet points.${contextSnippet}`;
 
-  // Format past history turns
-  const contents: any[] = [];
-  if (history && history.length > 0) {
-    const recent = history.slice(-6);
-    for (const h of recent) {
-      contents.push({
-        role: h.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: h.text }]
-      });
-    }
-  }
-
-  // Add the current prompt with system context
-  contents.push({
-    role: 'user',
-    parts: [{ text: `${systemPrompt}\n\nUser Question: ${prompt}` }]
-  });
+  // Build strictly alternating payload guaranteed to satisfy Google Gemini API specifications
+  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
 
   // Get discovered target and candidate targets
   const bestTarget = await discoverWorkingTarget(apiKey);
@@ -208,6 +250,8 @@ Your goals:
     bestTarget,
     ...ENDPOINT_TARGETS.filter(t => !(t.apiVersion === bestTarget.apiVersion && t.model === bestTarget.model))
   ];
+
+  let lastError = '';
 
   for (const target of targetsToTry) {
     try {
@@ -238,24 +282,23 @@ Your goals:
         const errData = await response.json().catch(() => ({}));
         const status = response.status;
         const errMsg = errData.error?.message || `HTTP ${status}`;
+        lastError = `${target.model} (${target.apiVersion}): ${errMsg}`;
 
-        // If invalid key, return clear guidance
+        // If invalid key, notify user immediately
         if (status === 400 && errMsg.includes('API key not valid')) {
           return `Google Gemini notice: The entered API key is invalid. Please tap "Change Key" in the top banner and paste your key from Google AI Studio.`;
         }
 
-        // If 404 or unsupported, continue trying next endpoint target silently
-        if (status === 404 || status === 400) {
-          continue;
-        }
+        // Continue trying other candidates
+        continue;
       }
     } catch (netErr: any) {
-      // Network error, try next or fallback
+      lastError = netErr.message;
     }
   }
 
-  // If all online attempts failed, fall back to local guidance gracefully
-  return generateLocalFinancialAdvice(prompt);
+  // If online attempts failed, surface the error and provide local guidance
+  return `⚠️ AI notice (${lastError || 'Network unreachable'}). Local advice:\n\n${generateLocalFinancialAdvice(prompt)}`;
 };
 
 export function generateLocalFinancialAdvice(query: string): string {
