@@ -1,22 +1,38 @@
-import React, { useState, useEffect } from 'react';
-import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink, Square, Languages, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
-import { queryGemini, getGeminiApiKey, setGeminiApiKey, testGeminiConnection, clearGeminiCache, getActiveModelName, setActiveModelName, fetchAvailableModels, AvailableModel, ChatMessage } from '@/lib/gemini';
+import { 
+  queryGemini, 
+  getGeminiApiKey, 
+  setGeminiApiKey, 
+  testGeminiConnection, 
+  clearGeminiCache, 
+  getActiveModelName, 
+  getActiveModelShortName,
+  setActiveModelName, 
+  fetchAvailableModels, 
+  AvailableModel, 
+  ChatMessage,
+  FREE_TIER_MODELS
+} from '@/lib/gemini';
 
 const Assistant: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { text: voiceText, isListening, startListening, hasSupport, setText: setVoiceText } = useSpeechToText();
 
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
     { 
       role: 'assistant', 
-      text: 'Namaste! I am Hema, your household financial companion. Ask me anything about your budget, Gold vs FD, Vaddi interest calculations, or household tax planning.' 
+      text: 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, live Gold rates, Vaddi interest calculations, or household tax planning.' 
     }
   ]);
   const [isTyping, setIsTyping] = useState(false);
+
+  // AbortController ref for instantaneous generation cancellation
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Gemini Key Modal & Connection Test State
   const [showKeyModal, setShowKeyModal] = useState(false);
@@ -24,8 +40,15 @@ const Assistant: React.FC = () => {
   const [hasApiKey, setHasApiKey] = useState(!!getGeminiApiKey());
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>(FREE_TIER_MODELS);
   const [selectedModel, setSelectedModel] = useState<string>(getActiveModelName());
+
+  // Available languages for the segmented slider
+  const languages = [
+    { code: 'en', label: 'English', short: 'EN' },
+    { code: 'hi', label: 'हिन्दी', short: 'HI' },
+    { code: 'te', label: 'తెలుగు', short: 'TE' },
+  ];
 
   // Sync voice input with text input
   useEffect(() => {
@@ -34,24 +57,55 @@ const Assistant: React.FC = () => {
     }
   }, [voiceText]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isTyping) return;
+  // Keep selectedModel synced with storage on mount
+  useEffect(() => {
+    setSelectedModel(getActiveModelName());
+  }, []);
 
-    const userText = input.trim();
-    const updatedMessages: ChatMessage[] = [...messages, { role: 'user', text: userText }];
+  const handleSend = async (customPrompt?: string) => {
+    const textToSend = (customPrompt || input).trim();
+    if (!textToSend || isTyping) return;
+
+    const updatedMessages: ChatMessage[] = [...messages, { role: 'user', text: textToSend }];
     setMessages(updatedMessages);
     setInput('');
     setVoiceText('');
     setIsTyping(true);
 
+    // Initialize AbortController for cancel / stop capability
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
-      const response = await queryGemini(userText, updatedMessages);
+      const response = await queryGemini(textToSend, updatedMessages, controller.signal, i18n.language);
       setMessages(prev => [...prev, { role: 'assistant', text: response }]);
     } catch (e: any) {
-      setMessages(prev => [...prev, { role: 'assistant', text: 'I encountered an issue processing that. Please try again.' }]);
+      if (e.name === 'AbortError' || controller.signal.aborted) {
+        setMessages(prev => [...prev, { role: 'assistant', text: '⏹ Response stopped by user.' }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', text: 'I encountered an issue processing that. Please try again.' }]);
+      }
     } finally {
       setIsTyping(false);
+      abortControllerRef.current = null;
     }
+  };
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsTyping(false);
+  };
+
+  const handleOpenSettingsModal = async () => {
+    setTestResult(null);
+    setShowKeyModal(true);
+    const currentModel = getActiveModelName();
+    setSelectedModel(currentModel);
+    const models = await fetchAvailableModels(apiKeyInput.trim());
+    setAvailableModels(models);
   };
 
   const handleSaveApiKey = () => {
@@ -64,46 +118,97 @@ const Assistant: React.FC = () => {
     setShowKeyModal(false);
   };
 
+  const quickPrompts = [
+    { label: '🪙 Gold Rate Today in Tirupati', query: 'What is 22K and 24K gold rate today in Tirupati, Andhra Pradesh?' },
+    { label: '📊 Calculate ₹2 Vaddi', query: 'How does informal ₹2 monthly Vaddi interest work for ₹50,000 borrowed for 6 months?' },
+    { label: '💰 Check My Ledger Balance', query: 'Based on my recorded income, expenses, and debts, what is my current net financial status?' },
+    { label: '🎁 Shagun Etiquette', query: 'What is the traditional etiquette for Shagun gifts at an Indian wedding?' }
+  ];
+
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] animate-in fade-in slide-in-from-bottom-4 duration-500 pb-2">
       
-      {/* Top Banner & Gemini API Status Pill */}
-      <div className="flex items-center justify-between bg-primary-50 border border-primary-200 px-3.5 py-2 rounded-xl mb-3 shrink-0">
+      {/* ================= 1. LANGUAGE SWITCHER SLIDER ================= */}
+      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-2 shadow-xs shrink-0">
+        <div className="flex items-center space-x-1.5 text-xs font-bold text-primary-950 pl-2">
+          <Languages size={15} className="text-primary-600" />
+          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Language:</span>
+        </div>
+        <div className="flex items-center space-x-1 bg-primary-50/70 p-0.5 rounded-xl border border-primary-200/50">
+          {languages.map(lang => {
+            const isActive = i18n.language.startsWith(lang.code);
+            return (
+              <button
+                key={lang.code}
+                type="button"
+                onClick={() => i18n.changeLanguage(lang.code)}
+                className={cn(
+                  "px-3 py-1 rounded-lg text-xs font-extrabold transition-all flex items-center space-x-1",
+                  isActive
+                    ? "bg-primary-600 text-white shadow-xs"
+                    : "text-textMuted hover:text-textMain hover:bg-white/60"
+                )}
+              >
+                <span>{lang.short}</span>
+                <span className="text-[10px] opacity-85 font-normal">({lang.label})</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ================= 2. TOP BANNER & GEMINI STATUS PILL ================= */}
+      <div className="flex items-center justify-between bg-primary-50 border border-primary-200 px-3.5 py-2 rounded-xl mb-2.5 shrink-0">
         <div className="flex items-center space-x-2 text-xs font-semibold text-primary-950">
           <Sparkles size={15} className="text-primary-600" />
           <span>Hema AI Engine</span>
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
-            {hasApiKey ? getActiveModelName() : 'Local AI'}
+            {hasApiKey ? getActiveModelShortName() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.4
+            v1.5
           </span>
         </div>
         <button
-          onClick={async () => {
-            setTestResult(null);
-            setShowKeyModal(true);
-            const models = await fetchAvailableModels(apiKeyInput.trim());
-            setAvailableModels(models);
-            setSelectedModel(getActiveModelName());
-          }}
+          type="button"
+          onClick={handleOpenSettingsModal}
           className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
         >
           <Key size={12} />
-          <span>{hasApiKey ? 'Change Key' : 'Connect Gemini'}</span>
+          <span>{hasApiKey ? 'Change Key / Model' : 'Connect Gemini'}</span>
         </button>
       </div>
 
-      {/* SEBI Compliance Banner */}
-      <div className="bg-amber-100/70 border border-amber-300 text-amber-900 px-3.5 py-2 rounded-xl flex items-start space-x-2.5 mb-3 shadow-xs shrink-0">
-        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-700" />
-        <p className="text-[11px] leading-relaxed text-amber-950">
+      {/* ================= 3. SEBI COMPLIANCE BANNER ================= */}
+      <div className="bg-amber-50/80 border border-amber-200 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2.5 shadow-xs shrink-0">
+        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-700" />
+        <p className="text-[10px] leading-relaxed text-amber-950">
           {t('assistant.compliance')}
         </p>
       </div>
 
-      {/* Chat History */}
-      <div className="flex-1 overflow-y-auto space-y-3.5 pb-3 px-1 scrollbar-hide">
+      {/* ================= 4. CHAT HISTORY ================= */}
+      <div className="flex-1 overflow-y-auto space-y-3 pb-3 px-1 scrollbar-hide">
+        {messages.length === 1 && (
+          <div className="p-3 bg-primary-50/50 rounded-2xl border border-primary-100 mb-2">
+            <p className="text-xs font-bold text-primary-900 mb-2 flex items-center">
+              <Sparkles size={13} className="mr-1 text-primary-600" />
+              Suggested Queries:
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {quickPrompts.map((qp, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => handleSend(qp.query)}
+                  className="text-left text-[11px] p-2 bg-white rounded-xl border border-primary-200/60 hover:border-primary-400 text-textMain hover:text-primary-700 transition-colors shadow-2xs"
+                >
+                  {qp.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {messages.map((msg, i) => (
           <div key={i} className={cn(
             "flex w-full",
@@ -125,11 +230,12 @@ const Assistant: React.FC = () => {
             </div>
           </div>
         ))}
+
         {isTyping && (
           <div className="flex w-full justify-start">
             <div className="bg-surface border border-borderLight text-textMain rounded-2xl rounded-bl-none p-3.5 shadow-xs">
               <div className="flex items-center space-x-1.5">
-                <span className="text-xs text-textMuted font-medium mr-1">Thinking</span>
+                <span className="text-xs text-textMuted font-medium mr-1">Hema is researching & formulating</span>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce"></div>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '0.15s' }}></div>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-600 animate-bounce" style={{ animationDelay: '0.3s' }}></div>
@@ -139,11 +245,26 @@ const Assistant: React.FC = () => {
         )}
       </div>
 
-      {/* Input Area */}
-      <div className="pt-2 shrink-0 bg-background">
+      {/* ================= 5. FLOATING STOP GENERATION BUTTON ================= */}
+      {isTyping && (
+        <div className="flex justify-center mb-1.5 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <button
+            type="button"
+            onClick={handleStop}
+            className="flex items-center space-x-1.5 px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full text-xs font-bold shadow-md active:scale-95 transition-all"
+          >
+            <Square size={12} className="fill-white" />
+            <span>Stop Generating</span>
+          </button>
+        </div>
+      )}
+
+      {/* ================= 6. INPUT AREA ================= */}
+      <div className="pt-1 shrink-0 bg-background">
         <div className="flex items-center space-x-2">
           {hasSupport && (
             <button 
+              type="button"
               onClick={startListening}
               className={cn(
                 "p-3 border rounded-full shadow-xs active:scale-95 transition-colors",
@@ -163,18 +284,30 @@ const Assistant: React.FC = () => {
               placeholder={t('assistant.placeholder')}
               className="w-full bg-surface border border-borderLight rounded-full py-3 pl-4 pr-12 text-xs sm:text-sm focus:outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 shadow-xs"
             />
-            <button 
-              onClick={handleSend}
-              disabled={!input.trim() || isTyping}
-              className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-40 transition-colors flex items-center justify-center"
-            >
-              <Send size={15} />
-            </button>
+            {isTyping ? (
+              <button 
+                type="button"
+                onClick={handleStop}
+                className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-full transition-colors flex items-center justify-center shadow-xs"
+                title="Stop Generating"
+              >
+                <Square size={13} className="fill-white" />
+              </button>
+            ) : (
+              <button 
+                type="button"
+                onClick={() => handleSend()}
+                disabled={!input.trim()}
+                className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-40 transition-colors flex items-center justify-center shadow-xs"
+              >
+                <Send size={15} />
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* ================= MODAL: GEMINI API KEY SETUP ================= */}
+      {/* ================= 7. MODAL: GEMINI API KEY & MODEL SETTINGS ================= */}
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
           <div className="w-full max-w-sm bg-surface rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 border border-borderLight">
@@ -184,8 +317,8 @@ const Assistant: React.FC = () => {
                   <Key size={16} />
                 </div>
                 <div>
-                  <h3 className="font-bold text-textMain text-sm">Google Gemini API</h3>
-                  <p className="text-[11px] text-textMuted">Live AI Financial Reasoning</p>
+                  <h3 className="font-bold text-textMain text-sm">Google Gemini AI Engine</h3>
+                  <p className="text-[11px] text-textMuted">Free Tier & Live Grounding Setup</p>
                 </div>
               </div>
               <button onClick={() => setShowKeyModal(false)} className="text-textMuted hover:text-textMain p-1">
@@ -195,7 +328,7 @@ const Assistant: React.FC = () => {
 
             <div className="space-y-3.5">
               <p className="text-xs text-textMuted leading-relaxed">
-                Connect your free Google Gemini API key to enable live, conversational financial intelligence aware of your household income and expenses.
+                Connect your Google Gemini API key to enable live web retrieval (live Gold rates, local prices) and verified household ledger grounding.
               </p>
 
               <div>
@@ -223,7 +356,7 @@ const Assistant: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex items-center justify-between text-[11px] pt-1">
+              <div className="flex items-center justify-between text-[11px] pt-0.5">
                 <a 
                   href="https://aistudio.google.com/app/apikey" 
                   target="_blank" 
@@ -248,37 +381,54 @@ const Assistant: React.FC = () => {
                     }
                     if (res.model) {
                       setSelectedModel(res.model);
+                      setActiveModelName(res.model);
                     }
                     setIsTesting(false);
                   }}
-                  className="text-primary-700 font-bold hover:underline disabled:opacity-50"
+                  className="text-primary-700 font-bold hover:underline disabled:opacity-50 flex items-center space-x-1"
                 >
-                  {isTesting ? 'Testing...' : 'Test Connection'}
+                  {isTesting ? (
+                    <>
+                      <RefreshCw size={11} className="animate-spin" />
+                      <span>Testing...</span>
+                    </>
+                  ) : (
+                    <span>Test Connection</span>
+                  )}
                 </button>
               </div>
 
-              {availableModels.length > 0 && (
-                <div className="pt-2">
-                  <label className="text-[11px] font-semibold text-textMuted">Active Gemini Model</label>
-                  <select
-                    value={selectedModel}
-                    onChange={e => {
-                      setSelectedModel(e.target.value);
-                      setActiveModelName(e.target.value);
-                    }}
-                    className="w-full mt-1 p-2 bg-background rounded-xl border border-borderLight text-xs font-semibold text-textMain outline-none"
-                  >
-                    {availableModels.map(m => (
-                      <option key={m.name} value={m.name}>
-                        {m.displayName} ({m.name.replace(/^models\//, '')})
-                      </option>
-                    ))}
-                  </select>
+              {/* Verified Free-Tier Model Dropdown */}
+              <div className="pt-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-[11px] font-bold text-textMain">Active Free-Tier Model</label>
+                  <span className="text-[10px] text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded-md border border-green-200">
+                    Auto-Failover Enabled
+                  </span>
                 </div>
-              )}
+                <select
+                  value={selectedModel}
+                  onChange={e => {
+                    const newModel = e.target.value;
+                    setSelectedModel(newModel);
+                    setActiveModelName(newModel);
+                  }}
+                  className="w-full mt-1.5 p-2.5 bg-background rounded-xl border border-borderLight text-xs font-semibold text-textMain outline-none focus:border-primary-400"
+                >
+                  {availableModels.map(m => (
+                    <option key={m.name} value={m.name}>
+                      {m.displayName}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-textMuted mt-1">
+                  💡 If Google experiences high demand on your selected model, Hema will automatically fail over to alternative free-tier models to prevent downtime.
+                </p>
+              </div>
 
               <div className="flex space-x-2 pt-2">
                 <button
+                  type="button"
                   onClick={() => {
                     setApiKeyInput('');
                     setGeminiApiKey('');
@@ -290,6 +440,7 @@ const Assistant: React.FC = () => {
                   Clear Key
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveApiKey}
                   className="flex-1 py-2.5 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs transition-colors shadow-soft"
                 >
