@@ -4,10 +4,26 @@ const GEMINI_KEY_STORAGE = 'hema_gemini_api_key';
 const ACTIVE_MODEL_STORAGE = 'hema_active_gemini_model';
 
 export interface AvailableModel {
-  name: string;        // e.g. "models/gemini-2.5-flash"
-  displayName: string; // e.g. "Gemini 2.5 Flash"
+  name: string;        // e.g. "models/gemini-3.8-flash"
+  displayName: string; // e.g. "Gemini 3.8 Flash (Recommended - Free Tier)"
   description?: string;
 }
+
+// Strictly curated models supported on Google AI Studio Free Tier
+export const FREE_TIER_MODELS: AvailableModel[] = [
+  {
+    name: 'models/gemini-3.8-flash',
+    displayName: 'Gemini 3.8 Flash (Recommended - Free Tier)'
+  },
+  {
+    name: 'models/gemini-3.6-flash',
+    displayName: 'Gemini 3.6 Flash (Fast - Free Tier)'
+  },
+  {
+    name: 'models/gemini-3.1-flash-lite',
+    displayName: 'Gemini 3.1 Flash-Lite (Lightweight - Free Tier)'
+  }
+];
 
 export const getGeminiApiKey = (): string => {
   return localStorage.getItem(GEMINI_KEY_STORAGE) || import.meta.env.VITE_GEMINI_API_KEY || '';
@@ -16,7 +32,6 @@ export const getGeminiApiKey = (): string => {
 export const setGeminiApiKey = (key: string): void => {
   if (key) {
     localStorage.setItem(GEMINI_KEY_STORAGE, key.trim());
-    localStorage.removeItem(ACTIVE_MODEL_STORAGE);
   } else {
     localStorage.removeItem(GEMINI_KEY_STORAGE);
     localStorage.removeItem(ACTIVE_MODEL_STORAGE);
@@ -32,7 +47,7 @@ export const getActiveModelName = (): string => {
   if (cached) {
     return cached.replace(/^models\//, '');
   }
-  return 'Gemini Live';
+  return 'gemini-3.8-flash';
 };
 
 export const setActiveModelName = (modelName: string): void => {
@@ -59,7 +74,6 @@ export function buildStrictGeminiPayload(
   prompt: string, 
   rawHistory: ChatMessage[] = []
 ): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
-  // Find first message spoken by the actual user
   const firstUserIdx = rawHistory.findIndex(m => m.role === 'user');
   const pastTurns = firstUserIdx !== -1 ? rawHistory.slice(firstUserIdx) : [];
 
@@ -74,7 +88,6 @@ export function buildStrictGeminiPayload(
     }
   }
 
-  // Ensure prompt is appended as final user turn
   if (contents.length === 0 || contents[contents.length - 1].role === 'model') {
     contents.push({
       role: 'user',
@@ -84,100 +97,71 @@ export function buildStrictGeminiPayload(
     contents[contents.length - 1].parts[0].text = prompt;
   }
 
-  // Prepend the system instructions to the first user turn so it works universally
+  // Prepend system prompt to the first user turn
   contents[0].parts[0].text = `${systemPrompt}\n\n[User Question]: ${contents[0].parts[0].text}`;
 
   return contents;
 }
 
 /**
- * Query Google Generative Language ModelService directly to retrieve all models
- * permitted for this user's specific API key.
+ * Query Google Generative Language ModelService directly and return ONLY active free-tier Flash models.
  */
 export const fetchAvailableModels = async (apiKey: string): Promise<AvailableModel[]> => {
-  if (!apiKey.trim()) return [];
+  if (!apiKey.trim()) return FREE_TIER_MODELS;
 
   const cleanKey = apiKey.trim();
 
-  for (const apiVer of ['v1beta', 'v1']) {
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/${apiVer}/models?key=${cleanKey}`);
-      if (res.ok) {
-        const data = await res.json();
-        const models: AvailableModel[] = (data.models || [])
-          .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
-          .map((m: any) => ({
-            name: m.name, // e.g. "models/gemini-2.5-flash"
-            displayName: m.displayName || m.name.replace(/^models\//, ''),
-            description: m.description
-          }));
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
+    if (res.ok) {
+      const data = await res.json();
+      const rawModels = data.models || [];
 
-        if (models.length > 0) {
-          return models;
-        }
+      // Filter down strictly to free-tier Flash models
+      const matched = FREE_TIER_MODELS.filter(ft =>
+        rawModels.some((m: any) => m.name === ft.name || m.name.endsWith(ft.name.replace(/^models\//, '')))
+      );
+
+      if (matched.length > 0) {
+        return matched;
       }
-    } catch (e) {
-      console.warn(`Failed to list models on ${apiVer}:`, e);
     }
+  } catch (e) {
+    console.warn('Could not list models from Google:', e);
   }
 
-  return [];
+  return FREE_TIER_MODELS;
 };
 
 /**
- * Test the API key by listing Google's active models and sending a test ping.
+ * Test the API key against the selected Free Tier model.
  */
 export const testGeminiConnection = async (
   apiKey: string,
   preferredModel?: string
-): Promise<{ success: boolean; model?: string; message: string; availableModels?: AvailableModel[] }> => {
+): Promise<{ success: boolean; model?: string; message: string; availableModels: AvailableModel[] }> => {
   if (!apiKey.trim()) {
-    return { success: false, message: 'Please enter your Google Gemini API key.' };
+    return { success: false, message: 'Please enter your Google Gemini API key.', availableModels: FREE_TIER_MODELS };
   }
 
   const cleanKey = apiKey.trim();
+  const availableModels = await fetchAvailableModels(cleanKey);
 
-  // 1. Fetch available models from Google's ModelService
-  let availableModels: AvailableModel[] = [];
-  try {
-    availableModels = await fetchAvailableModels(cleanKey);
-  } catch (e: any) {
-    return { success: false, message: `Could not reach Google API: ${e.message}` };
-  }
+  // Target model (default to gemini-3.8-flash)
+  const chosen = preferredModel || availableModels[0]?.name || 'models/gemini-3.8-flash';
+  const cleanModelName = chosen.startsWith('models/') ? chosen : `models/${chosen}`;
 
-  if (availableModels.length === 0) {
-    // If list returned empty, fetch raw error to report exact reason
-    try {
-      const testRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
-      const errJson = await testRes.json().catch(() => ({}));
-      const errMsg = errJson.error?.message || `HTTP ${testRes.status}`;
-      return { success: false, message: `Google API Error: ${errMsg}` };
-    } catch (e: any) {
-      return { success: false, message: `Network error: ${e.message}. Check your internet connection.` };
-    }
-  }
-
-  // 2. Choose target model (preferredModel, or highest flash model, or first available)
-  let targetModel = preferredModel 
-    ? availableModels.find(m => m.name === preferredModel || m.name.endsWith(preferredModel))
-    : null;
-
-  if (!targetModel) {
-    targetModel = availableModels.find(m => m.name.toLowerCase().includes('flash')) || availableModels[0];
-  }
-
-  // 3. Test generateContent
   try {
     const testPayload = {
       contents: [
         {
           role: 'user',
-          parts: [{ text: 'Respond with the single word: OK' }]
+          parts: [{ text: 'Respond with: READY' }]
         }
       ]
     };
 
-    const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${targetModel.name}:generateContent?key=${cleanKey}`;
+    const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${cleanModelName}:generateContent?key=${cleanKey}`;
     const genRes = await fetch(generateUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -188,11 +172,11 @@ export const testGeminiConnection = async (
       const data = await genRes.json();
       const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (reply) {
-        localStorage.setItem(ACTIVE_MODEL_STORAGE, targetModel.name);
+        localStorage.setItem(ACTIVE_MODEL_STORAGE, cleanModelName);
         return {
           success: true,
-          model: targetModel.displayName || targetModel.name,
-          message: `✅ Connected successfully: ${targetModel.displayName || targetModel.name}!`,
+          model: cleanModelName,
+          message: `✅ Connected successfully: ${cleanModelName.replace(/^models\//, '')}!`,
           availableModels
         };
       }
@@ -201,19 +185,19 @@ export const testGeminiConnection = async (
       const errMsg = errJson.error?.message || `HTTP ${genRes.status}`;
       return {
         success: false,
-        message: `Model test failed on ${targetModel.name}: ${errMsg}`,
+        message: `Error on ${cleanModelName.replace(/^models\//, '')}: ${errMsg}`,
         availableModels
       };
     }
   } catch (err: any) {
     return {
       success: false,
-      message: `Request failed: ${err.message}`,
+      message: `Network error: ${err.message}`,
       availableModels
     };
   }
 
-  return { success: false, message: 'Unknown error occurred while verifying.', availableModels };
+  return { success: false, message: 'Could not connect.', availableModels };
 };
 
 export const queryGemini = async (prompt: string, history: ChatMessage[] = []): Promise<string> => {
@@ -251,16 +235,9 @@ Guidance:
 
   const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
 
-  // Determine active model from cache or dynamically discover
+  // Read saved model or default to gemini-3.8-flash
   let activeModel = localStorage.getItem(ACTIVE_MODEL_STORAGE);
-  if (!activeModel) {
-    const testResult = await testGeminiConnection(apiKey);
-    if (testResult.success) {
-      activeModel = localStorage.getItem(ACTIVE_MODEL_STORAGE);
-    }
-  }
-
-  const modelToCall = activeModel || 'models/gemini-2.5-flash';
+  const modelToCall = activeModel || 'models/gemini-3.8-flash';
 
   try {
     const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${modelToCall}:generateContent?key=${apiKey}`;
@@ -287,9 +264,7 @@ Guidance:
     } else {
       const errData = await response.json().catch(() => ({}));
       const errMsg = errData.error?.message || `HTTP ${response.status}`;
-      // Invalidate cached model on failure so it can re-discover
-      localStorage.removeItem(ACTIVE_MODEL_STORAGE);
-      return `⚠️ Gemini API notice: ${errMsg}. Showing local advice instead:\n\n${generateLocalFinancialAdvice(prompt)}`;
+      return `⚠️ Gemini notice: ${errMsg}. Local advice:\n\n${generateLocalFinancialAdvice(prompt)}`;
     }
   } catch (netErr: any) {
     return `⚠️ Network notice: ${netErr.message}. Local advice:\n\n${generateLocalFinancialAdvice(prompt)}`;

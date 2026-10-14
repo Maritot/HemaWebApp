@@ -55,8 +55,12 @@ const Assistant: React.FC = () => {
   };
 
   const handleSaveApiKey = () => {
-    setGeminiApiKey(apiKeyInput.trim());
-    setHasApiKey(!!apiKeyInput.trim());
+    const cleanKey = apiKeyInput.trim();
+    setGeminiApiKey(cleanKey);
+    if (selectedModel) {
+      setActiveModelName(selectedModel);
+    }
+    setHasApiKey(!!cleanKey);
     setShowKeyModal(false);
   };
 
@@ -72,17 +76,16 @@ const Assistant: React.FC = () => {
             {hasApiKey ? getActiveModelName() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.3
+            v1.4
           </span>
         </div>
         <button
           onClick={async () => {
             setTestResult(null);
             setShowKeyModal(true);
-            if (apiKeyInput.trim()) {
-              const models = await fetchAvailableModels(apiKeyInput.trim());
-              setAvailableModels(models);
-            }
+            const models = await fetchAvailableModels(apiKeyInput.trim());
+            setAvailableModels(models);
+            setSelectedModel(getActiveModelName());
           }}
           className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
         >
