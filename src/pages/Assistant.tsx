@@ -19,16 +19,25 @@ import {
 } from '@/lib/gemini';
 
 const Assistant: React.FC = () => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { text: voiceText, isListening, startListening, hasSupport, setText: setVoiceText } = useSpeechToText();
 
+  // Chatbot-specific language selection (independent of global app UI language)
+  const [chatLanguage, setChatLanguage] = useState<'en' | 'hi' | 'te'>(() => {
+    return (localStorage.getItem('hema_assistant_chat_language') as 'en' | 'hi' | 'te') || 'en';
+  });
+
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { 
-      role: 'assistant', 
-      text: 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, live Gold rates, Vaddi interest calculations, or household tax planning.' 
-    }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const isTe = (localStorage.getItem('hema_assistant_chat_language') || 'en') === 'te';
+    const isHi = (localStorage.getItem('hema_assistant_chat_language') || 'en') === 'hi';
+    const initialGreeting = isTe 
+      ? 'నమస్కారం! నేను మీ హేమ (Hema) కుటుంబ ఆర్థిక సహాయకురాలిని. మీ గృహ బడ్జెట్, బంగారం రేట్లు, ₹2 వడ్డీ లెక్కలు లేదా పొదుపు గురించి ఏదైనా అడగండి.'
+      : isHi
+      ? 'नमस्ते! मैं आपकी पारिवारिक वित्तीय सहायक हेमा (Hema) हूँ। आप मुझसे घरेलू बजट, सोने के भाव, ₹2 ब्याज या बचत के बारे में कुछ भी पूछ सकते हैं।'
+      : 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, Gold investments, Vaddi interest calculations, or household tax planning.';
+    return [{ role: 'assistant', text: initialGreeting }];
+  });
   const [isTyping, setIsTyping] = useState(false);
 
   // AbortController ref for instantaneous generation cancellation
@@ -43,11 +52,11 @@ const Assistant: React.FC = () => {
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>(FREE_TIER_MODELS);
   const [selectedModel, setSelectedModel] = useState<string>(getActiveModelName());
 
-  // Available languages for the segmented slider
-  const languages = [
-    { code: 'en', label: 'English', short: 'EN' },
-    { code: 'hi', label: 'हिन्दी', short: 'HI' },
-    { code: 'te', label: 'తెలుగు', short: 'TE' },
+  // Chatbot response languages
+  const chatLanguages = [
+    { code: 'en' as const, label: 'English', short: 'EN' },
+    { code: 'hi' as const, label: 'हिन्दी', short: 'HI' },
+    { code: 'te' as const, label: 'తెలుగు', short: 'TE' },
   ];
 
   // Sync voice input with text input
@@ -61,6 +70,12 @@ const Assistant: React.FC = () => {
   useEffect(() => {
     setSelectedModel(getActiveModelName());
   }, []);
+
+  const handleLanguageSelect = (code: 'en' | 'hi' | 'te') => {
+    setChatLanguage(code);
+    localStorage.setItem('hema_assistant_chat_language', code);
+    // Explicitly do NOT change the global app i18n language, preserving the main app's layout
+  };
 
   const handleSend = async (customPrompt?: string) => {
     const textToSend = (customPrompt || input).trim();
@@ -77,7 +92,7 @@ const Assistant: React.FC = () => {
     abortControllerRef.current = controller;
 
     try {
-      const response = await queryGemini(textToSend, updatedMessages, controller.signal, i18n.language);
+      const response = await queryGemini(textToSend, updatedMessages, controller.signal, chatLanguage);
       setMessages(prev => [...prev, { role: 'assistant', text: response }]);
     } catch (e: any) {
       if (e.name === 'AbortError' || controller.signal.aborted) {
@@ -118,36 +133,47 @@ const Assistant: React.FC = () => {
     setShowKeyModal(false);
   };
 
-  const quickPrompts = [
-    { label: '🪙 Gold Rate Today in Tirupati', query: 'What is 22K and 24K gold rate today in Tirupati, Andhra Pradesh?' },
-    { label: '📊 Calculate ₹2 Vaddi', query: 'How does informal ₹2 monthly Vaddi interest work for ₹50,000 borrowed for 6 months?' },
+  const quickPrompts = chatLanguage === 'te' ? [
+    { label: '🪙 బంగారం ధర & పెట్టుబడి సలహా', query: 'భారతీయ గృహాలకు బంగారం vs ఫిక్స్‌డ్ డిపాజిట్ పొదుపు గురించి వివరించండి.' },
+    { label: '📊 ₹2 రూపాయల వడ్డీ లెక్కింపు', query: '₹50,000 అప్పుకు నెలకు ₹2 వడ్డీ లెక్కన 6 నెలలకు ఎంత అవుతుంది?' },
+    { label: '💰 నా ఖర్చులు & బడ్జెట్ బ్యాలెన్స్', query: 'నా రికార్డు చేసిన ఆదాయం, ఖర్చులు మరియు అప్పుల ఆధారంగా నా ప్రస్తుత నికర బ్యాలెన్స్ ఎంత?' },
+    { label: '🎁 శుభకార్యాల చదివింపుల మర్యాద', query: 'తెలుగు సాంప్రదాయ వివాహాలలో చదివింపులు, బహుమతుల ఆచారం మరియు మర్యాద ఏమిటి?' }
+  ] : chatLanguage === 'hi' ? [
+    { label: '🪙 सोने में निवेश और मार्गदर्शन', query: 'भारतीय परिवारों के लिए सोने में बचत बनाम बैंक एफडी की तुलना समझाएं।' },
+    { label: '📊 ₹2 ब्याज की सटीक गणना', query: '₹50,000 की राशि पर 2% प्रति माह ब्याज की दर से 6 महीने का कुल कितना बनेगा?' },
+    { label: '💰 मेरे बजट और खर्चों का विवरण', query: 'मेरी आय, खर्च और कर्जों के अनुसार मेरा वर्तमान वित्तीय विवरण क्या है?' },
+    { label: '🎁 शगुन के नियम और परंपरा', query: 'पारंपरिक भारतीय शादी और शुभ कार्यों में शगुन देने और निभाने की परंपरा क्या है?' }
+  ] : [
+    { label: '🪙 Gold vs FD Investment Guide', query: 'Explain physical gold vs sovereign gold bonds vs Fixed Deposits for Indian families.' },
+    { label: '📊 Calculate ₹2 Monthly Vaddi', query: 'How does informal ₹2 monthly Vaddi interest work for ₹50,000 borrowed for 6 months?' },
     { label: '💰 Check My Ledger Balance', query: 'Based on my recorded income, expenses, and debts, what is my current net financial status?' },
-    { label: '🎁 Shagun Etiquette', query: 'What is the traditional etiquette for Shagun gifts at an Indian wedding?' }
+    { label: '🎁 Traditional Shagun Etiquette', query: 'What is the traditional etiquette for reciprocal Shagun gifts at Indian family events?' }
   ];
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] animate-in fade-in slide-in-from-bottom-4 duration-500 pb-2">
       
-      {/* ================= 1. LANGUAGE SWITCHER SLIDER ================= */}
-      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-2 shadow-xs shrink-0">
+      {/* ================= 1. CHATBOT RESPONSE LANGUAGE SLIDER (BOT-ONLY) ================= */}
+      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-1.5 shadow-xs shrink-0">
         <div className="flex items-center space-x-1.5 text-xs font-bold text-primary-950 pl-2">
           <Languages size={15} className="text-primary-600" />
-          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Language:</span>
+          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Chatbot Language:</span>
         </div>
         <div className="flex items-center space-x-1 bg-primary-50/70 p-0.5 rounded-xl border border-primary-200/50">
-          {languages.map(lang => {
-            const isActive = i18n.language.startsWith(lang.code);
+          {chatLanguages.map(lang => {
+            const isActive = chatLanguage === lang.code;
             return (
               <button
                 key={lang.code}
                 type="button"
-                onClick={() => i18n.changeLanguage(lang.code)}
+                onClick={() => handleLanguageSelect(lang.code)}
                 className={cn(
                   "px-3 py-1 rounded-lg text-xs font-extrabold transition-all flex items-center space-x-1",
                   isActive
                     ? "bg-primary-600 text-white shadow-xs"
                     : "text-textMuted hover:text-textMain hover:bg-white/60"
                 )}
+                title={`Translate chatbot answers into ${lang.label}`}
               >
                 <span>{lang.short}</span>
                 <span className="text-[10px] opacity-85 font-normal">({lang.label})</span>
@@ -158,7 +184,7 @@ const Assistant: React.FC = () => {
       </div>
 
       {/* ================= 2. TOP BANNER & GEMINI STATUS PILL ================= */}
-      <div className="flex items-center justify-between bg-primary-50 border border-primary-200 px-3.5 py-2 rounded-xl mb-2.5 shrink-0">
+      <div className="flex items-center justify-between bg-primary-50 border border-primary-200 px-3.5 py-2 rounded-xl mb-2 shrink-0">
         <div className="flex items-center space-x-2 text-xs font-semibold text-primary-950">
           <Sparkles size={15} className="text-primary-600" />
           <span>Hema AI Engine</span>
@@ -166,7 +192,7 @@ const Assistant: React.FC = () => {
             {hasApiKey ? getActiveModelShortName() : 'Local AI'}
           </span>
           <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.5
+            v1.6
           </span>
         </div>
         <button
@@ -180,7 +206,7 @@ const Assistant: React.FC = () => {
       </div>
 
       {/* ================= 3. SEBI COMPLIANCE BANNER ================= */}
-      <div className="bg-amber-50/80 border border-amber-200 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2.5 shadow-xs shrink-0">
+      <div className="bg-amber-50/80 border border-amber-200 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2 shadow-xs shrink-0">
         <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-700" />
         <p className="text-[10px] leading-relaxed text-amber-950">
           {t('assistant.compliance')}
@@ -223,7 +249,7 @@ const Assistant: React.FC = () => {
               {msg.role === 'assistant' && (
                 <div className="flex items-center text-[10px] font-bold text-primary-700 uppercase tracking-wider mb-1">
                   <Sparkles size={11} className="mr-1 text-primary-600" />
-                  Hema AI
+                  Hema AI ({chatLanguage.toUpperCase()})
                 </div>
               )}
               {msg.text}
@@ -235,7 +261,7 @@ const Assistant: React.FC = () => {
           <div className="flex w-full justify-start">
             <div className="bg-surface border border-borderLight text-textMain rounded-2xl rounded-bl-none p-3.5 shadow-xs">
               <div className="flex items-center space-x-1.5">
-                <span className="text-xs text-textMuted font-medium mr-1">Hema is researching & formulating</span>
+                <span className="text-xs text-textMuted font-medium mr-1">Hema is formulating response</span>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce"></div>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '0.15s' }}></div>
                 <div className="w-1.5 h-1.5 rounded-full bg-primary-600 animate-bounce" style={{ animationDelay: '0.3s' }}></div>
@@ -318,7 +344,7 @@ const Assistant: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-bold text-textMain text-sm">Google Gemini AI Engine</h3>
-                  <p className="text-[11px] text-textMuted">Free Tier & Live Grounding Setup</p>
+                  <p className="text-[11px] text-textMuted">Free Tier & Ledger Grounding</p>
                 </div>
               </div>
               <button onClick={() => setShowKeyModal(false)} className="text-textMuted hover:text-textMain p-1">
@@ -328,7 +354,7 @@ const Assistant: React.FC = () => {
 
             <div className="space-y-3.5">
               <p className="text-xs text-textMuted leading-relaxed">
-                Connect your Google Gemini API key to enable live web retrieval (live Gold rates, local prices) and verified household ledger grounding.
+                Connect your Google Gemini API key to enable live, conversational intelligence grounded in your household finances.
               </p>
 
               <div>
@@ -422,7 +448,7 @@ const Assistant: React.FC = () => {
                   ))}
                 </select>
                 <p className="text-[10px] text-textMuted mt-1">
-                  💡 If Google experiences high demand on your selected model, Hema will automatically fail over to alternative free-tier models to prevent downtime.
+                  💡 If Google experiences temporary high demand, Hema automatically fails over across free-tier models to keep responding.
                 </p>
               </div>
 

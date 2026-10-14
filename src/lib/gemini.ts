@@ -302,15 +302,15 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
  * Enterprise Production Query Engine:
  * 1. AbortSignal support for instantaneous cancellation / pause.
  * 2. Multi-Model Automatic Failover on 503 / 429 demand spikes (3.8-flash <-> 3.6-flash <-> 3.1-flash-lite).
- * 3. Live Google Search Grounding for real-time rates (Gold, Silver in Indian cities, Lalitha Jewellers, petrol, etc.).
- * 4. Language Conditioning (English, Hindi, Telugu) based on user's active choice.
+ * 3. Chatbot-specific language conditioning (English, Hindi, Telugu) without altering main app UI.
+ * 4. Quota-safe execution: Standard queries NEVER consume grounding tools (avoiding 429 quota errors on free-tier keys).
  * 5. Strict SEBI & Fraud Prevention Guardrails.
  */
 export const queryGemini = async (
   prompt: string, 
   history: ChatMessage[] = [],
   signal?: AbortSignal,
-  languageCode: string = 'en'
+  chatLanguage: string = 'en'
 ): Promise<string> => {
   const apiKey = getGeminiApiKey();
 
@@ -319,17 +319,17 @@ export const queryGemini = async (
 
   // If no Gemini API Key is configured, use local intelligent financial engine
   if (!apiKey) {
-    return generateLocalFinancialAdvice(prompt, ragContext, languageCode);
+    return generateLocalFinancialAdvice(prompt, ragContext, chatLanguage);
   }
 
-  // Dynamic Language Directive
+  // Dynamic Language Directive explicitly for the AI Assistant's response
   let languageDirective = '';
-  if (languageCode.startsWith('te')) {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has chosen Telugu (తెలుగు). You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹.`;
-  } else if (languageCode.startsWith('hi')) {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has chosen Hindi (हिन्दी). You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹.`;
+  if (chatLanguage === 'te') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
+  } else if (chatLanguage === 'hi') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
   } else {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in warm, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
   }
 
   const systemPrompt = `You are Hema, a wise, caring, and practical financial assistant designed for Indian households and families.
@@ -340,8 +340,7 @@ ENTERPRISE PRODUCTION GUARDRAILS:
 1. SEBI Regulatory Compliance: All insights are strictly for educational and household management purposes. Do not give speculative stock trading calls or guaranteed return promises. Include brief disclaimer when discussing investments.
 2. Fraud & Scam Guardrail: If user mentions suspicious lottery messages, doubling money, telegram tasks, or sharing OTPs/PINs, strongly warn them to never share OTP or transfer money, and advise reporting to cybercrime.gov.in (Helpline: 1930).
 3. Informal Vaddi & Debt Priority: When households carry informal high-interest loans (e.g. ₹2 or ₹3 Vaddi monthly = 24-36% annual), advise prioritizing repayment before discretionary luxury spending.
-4. Live Information Accuracy: When asked about current market rates (such as Gold rates in Tirupati, Hyderabad, Chennai, or Lalitha Jewellers/Joyalukkas rates), reference real-time search findings.
-5. Tone: Respectful, culturally attuned, warm, structured with bullet points.`;
+4. Tone: Respectful, culturally attuned, warm, structured with bullet points.`;
 
   const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
 
@@ -362,39 +361,22 @@ ENTERPRISE PRODUCTION GUARDRAILS:
     try {
       const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:generateContent?key=${apiKey}`;
 
-      // First attempt with Google Search Grounding tool
-      const requestPayload: any = {
+      // Clean standard payload without external tools to ensure 100% free-tier compatibility
+      // (Google Search grounding requires paid Google Cloud billing and causes 429 quota exceeded on free keys)
+      const cleanPayload = {
         contents,
-        tools: [{ google_search: {} }],
         generationConfig: {
-          temperature: 0.6,
+          temperature: 0.65,
           maxOutputTokens: 1000
         }
       };
 
-      let response = await fetch(generateUrl, {
+      const response = await fetch(generateUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestPayload),
+        body: JSON.stringify(cleanPayload),
         signal
       });
-
-      // If tools aren't supported on this specific endpoint/key (HTTP 400), retry without tools
-      if (response.status === 400) {
-        const withoutToolsPayload = {
-          contents,
-          generationConfig: {
-            temperature: 0.6,
-            maxOutputTokens: 1000
-          }
-        };
-        response = await fetch(generateUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withoutToolsPayload),
-          signal
-        });
-      }
 
       if (response.ok) {
         const data = await response.json();
@@ -402,7 +384,6 @@ ENTERPRISE PRODUCTION GUARDRAILS:
         if (candidateParts && candidateParts.length > 0) {
           const fullText = candidateParts.map((p: any) => p.text || '').join('').trim();
           if (fullText) {
-            // If we successfully failed over to a secondary model, quietly record it
             if (i > 0) {
               console.info(`[Hema AI] Successfully failed over to ${currentModel} after spike on ${primaryModel}`);
             }
@@ -420,8 +401,6 @@ ENTERPRISE PRODUCTION GUARDRAILS:
         response.status === 503 || 
         response.status === 429 || 
         errMsg.toLowerCase().includes('demand') ||
-        errMsg.toLowerCase().includes('quota') ||
-        errMsg.toLowerCase().includes('resource has been exhausted') ||
         errMsg.toLowerCase().includes('busy');
 
       if (isHighDemandOrQuota && i < modelsToTry.length - 1) {
@@ -441,16 +420,16 @@ ENTERPRISE PRODUCTION GUARDRAILS:
   }
 
   // If all free-tier models failed due to demand spikes or connectivity:
-  return `⚠️ Gemini Free-Tier notice: ${lastErrorMessage || 'Service busy'}. Providing verified local ledger guidance:\n\n${generateLocalFinancialAdvice(prompt, ragContext, languageCode)}`;
+  return `⚠️ Gemini Free-Tier notice: ${lastErrorMessage || 'Service busy'}. Providing verified local ledger guidance:\n\n${generateLocalFinancialAdvice(prompt, ragContext, chatLanguage)}`;
 };
 
 /**
  * Intelligent Local Ledger-Aware Fallback Engine
  */
-export function generateLocalFinancialAdvice(query: string, ragContext: string = '', languageCode: string = 'en'): string {
+export function generateLocalFinancialAdvice(query: string, ragContext: string = '', chatLanguage: string = 'en'): string {
   const q = query.toLowerCase();
-  const isTe = languageCode.startsWith('te');
-  const isHi = languageCode.startsWith('hi');
+  const isTe = chatLanguage.startsWith('te');
+  const isHi = chatLanguage.startsWith('hi');
 
   if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat') || q.includes('బంగారం') || q.includes('సోనా')) {
     if (isTe) {
@@ -524,8 +503,7 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • ఫిక్స్‌డ్ డిపాజిట్ vs బంగారం పొదుపు
 • ₹2 రూపాయల వడ్డీ లెక్కలు
 • నెలవారీ కిరాణా మరియు ఇంటి ఖర్చుల నియంత్రణ
-• మీ గృహ బడ్జెట్ వివరాలు
-*(గమనిక: గూగుల్ జెమిని API కీని కనెక్ట్ చేయడం ద్వారా మరింత అధునాతన ప్రత్యక్ష AI సమాధానాలు పొందవచ్చు).*`;
+• మీ గృహ బడ్జెట్ మరియు అప్పుల వివరాలు`;
   }
 
   if (isHi) {
@@ -533,14 +511,12 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • फिक्स्ड डिपॉजिट बनाम सोना निवेश
 • ₹2 ब्याज की सटीक गणना
 • मासिक किराना और घरेलू बजट नियंत्रण
-• आपके खाते का आय-व्यय विवरण
-*(सुझाव: Google Gemini API कुंजी जोड़कर लाइव AI उत्तर प्राप्त करें).*`;
+• आपके खाते का आय-व्यय विवरण`;
   }
 
   return `Namaste! I am your Hema Financial Assistant. You can ask me about:
 • Comparing Fixed Deposits vs Gold
 • Calculating informal ₹ Vaddi interest
 • Setting a monthly Kirana/Grocery budget
-• Tax savings under Indian New vs Old Tax regime
-*(Tip: Add your Google Gemini API Key in the settings top banner for full live AI reasoning!)*`;
+• Tax savings under Indian New vs Old Tax regime`;
 }

@@ -209,6 +209,39 @@ export const getPeople = async (): Promise<PersonRecord[]> => {
   return localList;
 };
 
+export const updatePerson = async (person: PersonRecord) => {
+  saveLocalPerson(person);
+  try {
+    const db = await initDB();
+    if (db.objectStoreNames.contains('people')) {
+      await db.put('people', person);
+    }
+  } catch (err) {
+    console.warn('IndexedDB updatePerson fallback:', err);
+  }
+};
+
+export const updatePersonAndGifts = async (updatedPerson: PersonRecord, oldName?: string) => {
+  await updatePerson(updatedPerson);
+  if (oldName && oldName.trim() !== updatedPerson.name.trim()) {
+    try {
+      const db = await initDB();
+      if (db.objectStoreNames.contains('gifts')) {
+        const allGifts = await db.getAll('gifts');
+        for (const gift of allGifts) {
+          if (gift.personId === updatedPerson.id || (gift.person && gift.person.toLowerCase() === oldName.trim().toLowerCase())) {
+            gift.person = updatedPerson.name;
+            gift.personId = updatedPerson.id;
+            await db.put('gifts', gift);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not cascade person name to gifts:', e);
+    }
+  }
+};
+
 export const deletePerson = async (id: string) => {
   deleteLocalPerson(id);
   try {
