@@ -1,10 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Send, AlertTriangle, Mic, Sparkles, Key, Check, X, ExternalLink, Square, Languages, RefreshCw, Trash2 } from 'lucide-react';
+import { 
+  Send, 
+  AlertTriangle, 
+  Mic, 
+  Sparkles, 
+  Key, 
+  Check, 
+  X, 
+  ExternalLink, 
+  Square, 
+  Languages, 
+  RefreshCw, 
+  Trash2, 
+  Copy,
+  Coins,
+  Percent,
+  Wallet,
+  Gift
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
+import { FormattedChatMessage } from '@/components/FormattedChatMessage';
 import { 
-  queryGemini, 
   queryGeminiStream,
   getGeminiApiKey, 
   setGeminiApiKey, 
@@ -23,12 +41,12 @@ const CHAT_HISTORY_STORAGE_KEY = 'hema_assistant_chat_history';
 
 const getInitialGreeting = (lang: string): string => {
   if (lang === 'te') {
-    return 'నమస్కారం! నేను మీ హేమ (Hema) కుటుంబ ఆర్థిక సహాయకురాలిని. మీ గృహ బడ్జెట్, బంగారం రేట్లు, ₹2 వడ్డీ లెక్కలు లేదా పొదుపు గురించి ఏదైనా అడగండి.';
+    return 'నమస్కారం! నేను మీ హేమ (Hema) కుటుంబ ఆర్థిక సహాయకురాలిని. బంగారం ధరలు, ₹2 వడ్డీ లెక్కలు, లేదా గృహ బడ్జెట్ గురించి ఏదైనా అడగండి.';
   }
   if (lang === 'hi') {
-    return 'नमस्ते! मैं आपकी पारिवारिक वित्तीय सहायक हेमा (Hema) हूँ। आप मुझसे घरेलू बजट, सोने के भाव, ₹2 ब्याज या बचत के बारे में कुछ भी पूछ सकते हैं।';
+    return 'नमस्ते! मैं आपकी पारिवारिक वित्तीय सहायक हेमा (Hema) हूँ। सोने के भाव, ₹2 ब्याज गणना या घरेलू बजट के बारे में कुछ भी पूछें।';
   }
-  return 'Namaste! I am Hema, your household financial companion. Ask me anything about your family budget, Gold investments, Vaddi interest calculations, or household tax planning.';
+  return 'Namaste! I am Hema, your household financial companion. Ask me anything about gold rates, informal ₹ Vaddi calculations, or family budgeting.';
 };
 
 const Assistant: React.FC = () => {
@@ -41,6 +59,7 @@ const Assistant: React.FC = () => {
   });
 
   const [input, setInput] = useState('');
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   
   // Persisted chat history across tabs and app navigation
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -59,12 +78,20 @@ const Assistant: React.FC = () => {
   });
   const [isTyping, setIsTyping] = useState(false);
 
+  // Auto-scroll ref
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
   // Auto-persist messages whenever they change
   useEffect(() => {
     try {
       localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(messages));
     } catch (e) {}
   }, [messages]);
+
+  // Smooth scroll to bottom on new messages or streaming chunks
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping]);
 
   // AbortController ref for instantaneous generation cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -100,11 +127,25 @@ const Assistant: React.FC = () => {
   const handleLanguageSelect = (code: 'en' | 'hi' | 'te') => {
     setChatLanguage(code);
     localStorage.setItem('hema_assistant_chat_language', code);
-    // Explicitly do NOT change the global app i18n language, preserving the main app's layout
+    // If only initial greeting exists, refresh it in the new language
+    if (messages.length === 1 && messages[0].role === 'assistant') {
+      const updatedGreeting = [{ role: 'assistant' as const, text: getInitialGreeting(code) }];
+      setMessages(updatedGreeting);
+    }
+  };
+
+  const handleCopyMessage = async (text: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } catch (e) {
+      console.warn('Failed to copy to clipboard', e);
+    }
   };
 
   const handleClearChat = () => {
-    if (window.confirm('Clear chat history and start fresh?')) {
+    if (window.confirm('Clear conversation and start fresh?')) {
       const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage) }];
       setMessages(reset);
       try {
@@ -127,7 +168,6 @@ const Assistant: React.FC = () => {
     setVoiceText('');
     setIsTyping(true);
 
-    // Initialize AbortController for cancel / stop capability
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -150,7 +190,7 @@ const Assistant: React.FC = () => {
         chatLanguage
       );
 
-      // If streaming wasn't supported, use final response
+      // Fallback update if streaming was empty
       if (!streamedBuffer && finalResponse) {
         setMessages(prev => {
           const copy = [...prev];
@@ -212,30 +252,90 @@ const Assistant: React.FC = () => {
   };
 
   const quickPrompts = chatLanguage === 'te' ? [
-    { label: '🪙 బంగారం ధర & పెట్టుబడి సలహా', query: 'భారతీయ గృహాలకు బంగారం vs ఫిక్స్‌డ్ డిపాజిట్ పొదుపు గురించి వివరించండి.' },
-    { label: '📊 ₹2 రూపాయల వడ్డీ లెక్కింపు', query: '₹50,000 అప్పుకు నెలకు ₹2 వడ్డీ లెక్కన 6 నెలలకు ఎంత అవుతుంది?' },
-    { label: '💰 నా ఖర్చులు & బడ్జెట్ బ్యాలెన్స్', query: 'నా రికార్డు చేసిన ఆదాయం, ఖర్చులు మరియు అప్పుల ఆధారంగా నా ప్రస్తుత నికర బ్యాలెన్స్ ఎంత?' },
-    { label: '🎁 శుభకార్యాల చదివింపుల మర్యాద', query: 'తెలుగు సాంప్రదాయ వివాహాలలో చదివింపులు, బహుమతుల ఆచారం మరియు మర్యాద ఏమిటి?' }
+    { 
+      icon: Coins, 
+      title: 'బంగారం ధర & సేవింగ్స్', 
+      desc: '24K & 22K ధరలు, SGB vs నగలు', 
+      query: 'ఈరోజు బంగారం ధరలు మరియు భౌతిక బంగారం vs SGB పొదుపు గురించి క్లుప్తంగా చెప్పండి.' 
+    },
+    { 
+      icon: Percent, 
+      title: '₹2 రూపాయల వడ్డీ లెక్క', 
+      desc: '₹50,000 కు 6 నెలల లెక్క', 
+      query: '₹50,000 అప్పుకు నెలకు ₹2 వడ్డీ లెక్కన 6 నెలలకు మొత్తం ఎంత అవుతుంది?' 
+    },
+    { 
+      icon: Wallet, 
+      title: 'గృహ బడ్జెట్ బ్యాలెన్స్', 
+      desc: 'ఆదాయం, ఖర్చులు & పొదుపు', 
+      query: 'నా రికార్డు చేసిన లెడ్జర్ ప్రకారం నా ప్రస్తుత నికర బ్యాలెన్స్ మరియు బడ్జెట్ స్థితి ఏమిటి?' 
+    },
+    { 
+      icon: Gift, 
+      title: 'చదివింపుల మర్యాద', 
+      desc: 'శుభకార్యాల ఆచారం', 
+      query: 'వివాహాలలో సాంప్రదాయ చదివింపులు మరియు బహుమతుల ఆచారం గురించి క్లుప్తంగా చెప్పండి.' 
+    }
   ] : chatLanguage === 'hi' ? [
-    { label: '🪙 सोने में निवेश और मार्गदर्शन', query: 'भारतीय परिवारों के लिए सोने में बचत बनाम बैंक एफडी की तुलना समझाएं।' },
-    { label: '📊 ₹2 ब्याज की सटीक गणना', query: '₹50,000 की राशि पर 2% प्रति माह ब्याज की दर से 6 महीने का कुल कितना बनेगा?' },
-    { label: '💰 मेरे बजट और खर्चों का विवरण', query: 'मेरी आय, खर्च और कर्जों के अनुसार मेरा वर्तमान वित्तीय विवरण क्या है?' },
-    { label: '🎁 शगुन के नियम और परंपरा', query: 'पारंपरिक भारतीय शादी और शुभ कार्यों में शगुन देने और निभाने की परंपरा क्या है?' }
+    { 
+      icon: Coins, 
+      title: 'सोने के भाव व बचत', 
+      desc: '24K/22K भाव, गहने vs SGB', 
+      query: 'आज के सोने के अनुमानित भाव और भारतीय परिवारों के लिए स्वर्ण बचत संक्षेप में समझाएं।' 
+    },
+    { 
+      icon: Percent, 
+      title: '₹2 ब्याज की गणना', 
+      desc: '₹50,000 पर 6 महीने का ब्याज', 
+      query: '₹50,000 की राशि पर 2% प्रति माह ब्याज दर से 6 महीने का कुल कितना बनेगा?' 
+    },
+    { 
+      icon: Wallet, 
+      title: 'घरेलू बजट स्थिति', 
+      desc: 'आय, व्यय व शुद्ध बचत', 
+      query: 'मेरे दर्ज आय-व्यय के अनुसार मेरी वर्तमान वित्तीय स्थिति का संक्षिप्त सारांश क्या है?' 
+    },
+    { 
+      icon: Gift, 
+      title: 'शगुन की परंपरा', 
+      desc: 'शुभ कार्यों में लिफाफा नियम', 
+      query: 'शुभ कार्यों और शादियों में पारंपरिक शगुन के नियम और परंपरा संक्षेप में बताएं।' 
+    }
   ] : [
-    { label: '🪙 Gold vs FD Investment Guide', query: 'Explain physical gold vs sovereign gold bonds vs Fixed Deposits for Indian families.' },
-    { label: '📊 Calculate ₹2 Monthly Vaddi', query: 'How does informal ₹2 monthly Vaddi interest work for ₹50,000 borrowed for 6 months?' },
-    { label: '💰 Check My Ledger Balance', query: 'Based on my recorded income, expenses, and debts, what is my current net financial status?' },
-    { label: '🎁 Traditional Shagun Etiquette', query: 'What is the traditional etiquette for reciprocal Shagun gifts at Indian family events?' }
+    { 
+      icon: Coins, 
+      title: 'Gold Rates & SGB Guide', 
+      desc: 'Today\'s 24K/22K & pure investment', 
+      query: 'What are today\'s estimated 24K and 22K gold rates and how should families invest wisely?' 
+    },
+    { 
+      icon: Percent, 
+      title: '₹2 Monthly Vaddi Math', 
+      desc: 'Calculation on ₹50,000 for 6 months', 
+      query: 'Calculate informal ₹2 monthly Vaddi interest for ₹50,000 borrowed for 6 months.' 
+    },
+    { 
+      icon: Wallet, 
+      title: 'Check Ledger Balance', 
+      desc: 'Income, expenses & net savings', 
+      query: 'Based on my recorded income, expenses, and debts, what is my current net financial status?' 
+    },
+    { 
+      icon: Gift, 
+      title: 'Traditional Shagun Rules', 
+      desc: 'Reciprocal family etiquette', 
+      query: 'What is the traditional etiquette for reciprocal Shagun gifts at Indian family events?' 
+    }
   ];
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] animate-in fade-in slide-in-from-bottom-4 duration-500 pb-2">
       
       {/* ================= 1. CHATBOT RESPONSE LANGUAGE SLIDER (BOT-ONLY) ================= */}
-      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-1.5 shadow-xs shrink-0">
+      <div className="flex items-center justify-between bg-white border border-primary-100 p-1.5 rounded-2xl mb-1.5 shadow-2xs shrink-0">
         <div className="flex items-center space-x-1.5 text-xs font-bold text-primary-950 pl-2">
           <Languages size={15} className="text-primary-600" />
-          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Chatbot Language:</span>
+          <span className="text-[11px] font-semibold text-textMuted uppercase tracking-wider">AI Language:</span>
         </div>
         <div className="flex items-center space-x-1 bg-primary-50/70 p-0.5 rounded-xl border border-primary-200/50">
           {chatLanguages.map(lang => {
@@ -262,15 +362,15 @@ const Assistant: React.FC = () => {
       </div>
 
       {/* ================= 2. TOP BANNER & GEMINI STATUS PILL ================= */}
-      <div className="flex items-center justify-between bg-primary-50 border border-primary-200 px-3.5 py-2 rounded-xl mb-2 shrink-0">
+      <div className="flex items-center justify-between bg-primary-50/90 border border-primary-200 px-3.5 py-2 rounded-xl mb-2 shrink-0 shadow-2xs">
         <div className="flex items-center space-x-2 text-xs font-semibold text-primary-950">
           <Sparkles size={15} className="text-primary-600" />
-          <span>Hema AI Engine</span>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
+          <span>Hema AI</span>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${hasApiKey ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-amber-100 text-amber-800 border border-amber-200'}`}>
             {hasApiKey ? getActiveModelShortName() : 'Local AI'}
           </span>
-          <span className="text-[10px] bg-primary-200/80 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
-            v1.7
+          <span className="text-[10px] bg-primary-200/90 text-primary-900 font-extrabold px-1.5 py-0.5 rounded-md">
+            v1.8
           </span>
         </div>
         <div className="flex items-center space-x-1.5">
@@ -286,78 +386,133 @@ const Assistant: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenSettingsModal}
-            className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-xs"
+            className="flex items-center space-x-1 text-[11px] font-bold text-primary-700 hover:text-primary-800 bg-white px-2.5 py-1 rounded-lg border border-primary-200 shadow-2xs hover:shadow-xs transition-all"
           >
             <Key size={12} />
-            <span>{hasApiKey ? 'Change Key / Model' : 'Connect Gemini'}</span>
+            <span>{hasApiKey ? 'Key & Model' : 'Connect Gemini'}</span>
           </button>
         </div>
       </div>
 
       {/* ================= 3. SEBI COMPLIANCE BANNER ================= */}
-      <div className="bg-amber-50/80 border border-amber-200 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2 shadow-xs shrink-0">
-        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-700" />
+      <div className="bg-amber-50/70 border border-amber-200/80 text-amber-900 px-3.5 py-1.5 rounded-xl flex items-start space-x-2.5 mb-2 shadow-2xs shrink-0">
+        <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-700" />
         <p className="text-[10px] leading-relaxed text-amber-950">
           {t('assistant.compliance')}
         </p>
       </div>
 
       {/* ================= 4. CHAT HISTORY ================= */}
-      <div className="flex-1 overflow-y-auto space-y-3 pb-3 px-1 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto space-y-3.5 pb-3 px-1 scrollbar-hide">
         {messages.length === 1 && (
-          <div className="p-3 bg-primary-50/50 rounded-2xl border border-primary-100 mb-2">
+          <div className="p-3 bg-primary-50/40 rounded-2xl border border-primary-150 mb-2">
             <p className="text-xs font-bold text-primary-900 mb-2 flex items-center">
               <Sparkles size={13} className="mr-1 text-primary-600" />
               Suggested Queries:
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-              {quickPrompts.map((qp, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleSend(qp.query)}
-                  className="text-left text-[11px] p-2 bg-white rounded-xl border border-primary-200/60 hover:border-primary-400 text-textMain hover:text-primary-700 transition-colors shadow-2xs"
-                >
-                  {qp.label}
-                </button>
-              ))}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {quickPrompts.map((qp, idx) => {
+                const IconComponent = qp.icon;
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => handleSend(qp.query)}
+                    className="text-left p-2.5 bg-white hover:bg-primary-50/60 rounded-xl border border-primary-200/70 hover:border-primary-400 text-slate-800 transition-all shadow-2xs group flex items-start space-x-2.5"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-primary-100/70 text-primary-700 flex items-center justify-center shrink-0 mt-0.5 group-hover:bg-primary-600 group-hover:text-white transition-colors">
+                      <IconComponent size={14} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-slate-900 group-hover:text-primary-900 leading-tight">
+                        {qp.title}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                        {qp.desc}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
 
         {messages.map((msg, i) => (
-          <div key={i} className={cn(
-            "flex w-full",
-            msg.role === 'user' ? "justify-end" : "justify-start"
-          )}>
-            <div className={cn(
-              "max-w-[85%] rounded-2xl p-3.5 text-xs sm:text-sm leading-relaxed shadow-xs whitespace-pre-line",
-              msg.role === 'user' 
-                ? "bg-primary-600 text-white rounded-br-none font-medium" 
-                : "bg-surface border border-borderLight text-textMain rounded-bl-none"
-            )}>
-              {msg.role === 'assistant' && (
-                <div className="flex items-center text-[10px] font-bold text-primary-700 uppercase tracking-wider mb-1">
-                  <Sparkles size={11} className="mr-1 text-primary-600" />
-                  Hema AI ({chatLanguage.toUpperCase()})
+          <div 
+            key={i} 
+            className={cn(
+              "flex w-full animate-in fade-in slide-in-from-bottom-2 duration-200",
+              msg.role === 'user' ? "justify-end" : "justify-start"
+            )}
+          >
+            {msg.role === 'user' ? (
+              <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-xs bg-gradient-to-r from-primary-600 to-primary-700 text-white px-3.5 py-2.5 sm:px-4 sm:py-3 shadow-soft">
+                <p className="text-xs sm:text-sm font-medium leading-relaxed whitespace-pre-wrap break-words">
+                  {msg.text}
+                </p>
+              </div>
+            ) : (
+              <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-4 text-slate-800">
+                {/* Assistant Card Header */}
+                <div className="flex items-center justify-between border-b border-primary-100/70 pb-1.5 mb-2">
+                  <div className="flex items-center space-x-1.5">
+                    <div className="w-5 h-5 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
+                      <Sparkles size={11} />
+                    </div>
+                    <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
+                    <span className="text-[9px] bg-primary-50 text-primary-800 font-extrabold px-1.5 py-0.2 rounded border border-primary-200/60 uppercase">
+                      {chatLanguage}
+                    </span>
+                    {hasApiKey && (
+                      <span className="hidden xs:inline-block text-[9px] text-slate-400 font-medium">
+                        · {getActiveModelShortName()}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Copy Action */}
+                  {msg.text && (
+                    <button
+                      type="button"
+                      onClick={() => handleCopyMessage(msg.text, i)}
+                      className="flex items-center space-x-1 text-[10px] font-semibold text-slate-500 hover:text-primary-700 hover:bg-primary-50 px-2 py-0.5 rounded-md transition-colors"
+                      title="Copy response to clipboard"
+                    >
+                      {copiedIndex === i ? (
+                        <>
+                          <Check size={11} className="text-green-600" />
+                          <span className="text-green-700 font-bold">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={11} />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
-              )}
-              {msg.text}
-            </div>
+
+                {/* Formatted Markdown Body */}
+                {msg.text ? (
+                  <FormattedChatMessage
+                    content={msg.text}
+                    isStreaming={isTyping && i === messages.length - 1}
+                  />
+                ) : (
+                  <div className="flex items-center space-x-2 py-1 text-slate-500 text-xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-150" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-300" />
+                    <span className="text-[11px] font-medium text-slate-500 ml-1">Formulating response...</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ))}
 
-        {isTyping && (
-          <div className="flex w-full justify-start">
-            <div className="bg-surface border border-borderLight text-textMain rounded-2xl rounded-bl-none p-3.5 shadow-xs">
-              <div className="flex items-center space-x-1.5">
-                <span className="text-xs text-textMuted font-medium mr-1">Hema is formulating response</span>
-                <div className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-bounce"></div>
-                <div className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '0.15s' }}></div>
-                <div className="w-1.5 h-1.5 rounded-full bg-primary-600 animate-bounce" style={{ animationDelay: '0.3s' }}></div>
-              </div>
-            </div>
-          </div>
-        )}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* ================= 5. FLOATING STOP GENERATION BUTTON ================= */}
@@ -366,9 +521,9 @@ const Assistant: React.FC = () => {
           <button
             type="button"
             onClick={handleStop}
-            className="flex items-center space-x-1.5 px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full text-xs font-bold shadow-md active:scale-95 transition-all"
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full text-xs font-bold shadow-md active:scale-95 transition-all"
           >
-            <Square size={12} className="fill-white" />
+            <Square size={11} className="fill-white" />
             <span>Stop Generating</span>
           </button>
         </div>

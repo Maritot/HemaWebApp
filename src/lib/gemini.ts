@@ -306,6 +306,41 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
  * 4. Quota-safe execution: Standard queries NEVER consume grounding tools (avoiding 429 quota errors on free-tier keys).
  * 5. Strict SEBI & Fraud Prevention Guardrails.
  */
+export function buildSystemPrompt(ragContext: string, chatLanguage: string): string {
+  let languageDirective = '';
+  if (chatLanguage === 'te') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
+  } else if (chatLanguage === 'hi') {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
+  } else {
+    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
+  }
+
+  return `You are Hema, a wise, caring, and practical household financial companion for Indian families.
+${ragContext}
+${languageDirective}
+
+CRITICAL RESPONSE LENGTH & UI/UX FORMATTING PRINCIPLES:
+1. GREETINGS RULE: When greeted (e.g. "Hi", "Hello", "నమస్కారం", "హలో", "Namaste"), reply in ONLY 1 to 2 warm, friendly sentences (e.g. greeting them and asking how you can help with their household budget, gold rates, or savings). NEVER output unprompted feature lists or tutorials on greetings.
+2. STRICT BREVITY & CONCISENESS: Always keep answers direct, punchy, and under 80-120 words. No repetitive introductory filler or concluding fluff. Answer the user's specific question immediately in the first sentence.
+3. CLEAN STRUCTURED FORMATTING:
+   - Use bold titles (**Topic**) to organize key facts.
+   - Use bullet points (* Item) for lists.
+   - For Gold rates, interest calculations, or budgets, format into clean, compact bullet pairs (e.g. * **24K Gold:** ₹8,150/g | * **22K Gold:** ₹7,470/g).
+   - Never output bare asterisks, broken formatting, or walls of dense text.
+4. REGULATORY & DISCLAIMER RULE: Keep any SEBI compliance note to a single subtle sentence at the end (e.g. *(Note: For educational household management only)*). Never generate lengthy legal paragraphs.
+5. FRAUD & SAFETY GUARDRAIL: If user mentions suspicious doubling schemes or sharing OTPs, warn them sternly to never share OTPs and report to cybercrime.gov.in (Helpline: 1930).
+6. INFORMAL VADDI RULE: For informal borrowings (e.g. ₹2 Vaddi = 2% per month / 24% annual), clearly calculate monthly interest and advise clearing high-interest debt first.`;
+}
+
+/**
+ * Enterprise Production Query Engine:
+ * 1. AbortSignal support for instantaneous cancellation / pause.
+ * 2. Multi-Model Automatic Failover on 503 / 429 demand spikes (3.8-flash <-> 3.6-flash <-> 3.1-flash-lite).
+ * 3. Chatbot-specific language conditioning (English, Hindi, Telugu) without altering main app UI.
+ * 4. Quota-safe execution: Standard queries NEVER consume grounding tools (avoiding 429 quota errors on free-tier keys).
+ * 5. Strict SEBI & Fraud Prevention Guardrails.
+ */
 export const queryGemini = async (
   prompt: string, 
   history: ChatMessage[] = [],
@@ -322,26 +357,7 @@ export const queryGemini = async (
     return generateLocalFinancialAdvice(prompt, ragContext, chatLanguage);
   }
 
-  // Dynamic Language Directive explicitly for the AI Assistant's response
-  let languageDirective = '';
-  if (chatLanguage === 'te') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
-  } else if (chatLanguage === 'hi') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
-  } else {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
-  }
-
-  const systemPrompt = `You are Hema, a wise, caring, and practical financial assistant designed for Indian households and families.
-${ragContext}
-${languageDirective}
-
-ENTERPRISE PRODUCTION GUARDRAILS:
-1. SEBI Regulatory Compliance: All insights are strictly for educational and household management purposes. Do not give speculative stock trading calls or guaranteed return promises. Include brief disclaimer when discussing investments.
-2. Fraud & Scam Guardrail: If user mentions suspicious lottery messages, doubling money, telegram tasks, or sharing OTPs/PINs, strongly warn them to never share OTP or transfer money, and advise reporting to cybercrime.gov.in (Helpline: 1930).
-3. Informal Vaddi & Debt Priority: When households carry informal high-interest loans (e.g. ₹2 or ₹3 Vaddi monthly = 24-36% annual), advise prioritizing repayment before discretionary luxury spending.
-4. Tone: Respectful, culturally attuned, warm, structured with bullet points.`;
-
+  const systemPrompt = buildSystemPrompt(ragContext, chatLanguage);
   const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
 
   // Read preferred model and build automatic failover chain
@@ -362,12 +378,11 @@ ENTERPRISE PRODUCTION GUARDRAILS:
       const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:generateContent?key=${apiKey}`;
 
       // Clean standard payload without external tools to ensure 100% free-tier compatibility
-      // (Google Search grounding requires paid Google Cloud billing and causes 429 quota exceeded on free keys)
       const cleanPayload = {
         contents,
         generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 800,
+          temperature: 0.4,
+          maxOutputTokens: 400,
           thinkingConfig: {
             thinkingBudget: 0
           }
@@ -449,25 +464,7 @@ export const queryGeminiStream = async (
     return local;
   }
 
-  let languageDirective = '';
-  if (chatLanguage === 'te') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
-  } else if (chatLanguage === 'hi') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
-  } else {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
-  }
-
-  const systemPrompt = `You are Hema, a wise, caring, and practical financial assistant designed for Indian households and families.
-${ragContext}
-${languageDirective}
-
-ENTERPRISE PRODUCTION GUARDRAILS:
-1. SEBI Regulatory Compliance: All insights are strictly for educational and household management purposes. Do not give speculative stock trading calls or guaranteed return promises. Include brief disclaimer when discussing investments.
-2. Fraud & Scam Guardrail: If user mentions suspicious lottery messages, doubling money, telegram tasks, or sharing OTPs/PINs, strongly warn them to never share OTP or transfer money, and advise reporting to cybercrime.gov.in (Helpline: 1930).
-3. Informal Vaddi & Debt Priority: When households carry informal high-interest loans (e.g. ₹2 or ₹3 Vaddi monthly = 24-36% annual), advise prioritizing repayment before discretionary luxury spending.
-4. Tone: Respectful, culturally attuned, warm, structured with bullet points.`;
-
+  const systemPrompt = buildSystemPrompt(ragContext, chatLanguage);
   const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
   const primaryModel = getActiveModelName();
   const fallbackList = FREE_TIER_MODELS.map(m => m.name).filter(m => m !== primaryModel);
@@ -486,8 +483,8 @@ ENTERPRISE PRODUCTION GUARDRAILS:
       const cleanPayload = {
         contents,
         generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 800,
+          temperature: 0.4,
+          maxOutputTokens: 400,
           thinkingConfig: {
             thinkingBudget: 0
           }
@@ -628,25 +625,24 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • Check the Gift Ledger under the person's name before attending a function to reciprocate honorably based on past exchanges.`;
   }
 
+  // Friendly, concise greeting handling
+  if (q.includes('hi') || q.includes('hello') || q.includes('namaste') || q.includes('hey') || q.includes('నమస్కారం') || q.includes('నమస్తే') || q.includes('नमस्ते')) {
+    if (isTe) {
+      return `నమస్కారం! నేను మీ హేమ (Hema). మీ గృహ బడ్జెట్, బంగారం రేట్లు, లేదా ₹2 వడ్డీ లెక్కల గురించి మీకు ఎలా సహాయపడగలను?`;
+    }
+    if (isHi) {
+      return `नमस्ते! मैं आपकी हेमा (Hema) हूँ। आपके पारिवारिक बजट, सोने के भाव या बचत के बारे में मैं आपकी क्या मदद कर सकती हूँ?`;
+    }
+    return `Namaste! I am Hema, your household financial companion. How can I assist you today with your family budget, gold rates, or savings?`;
+  }
+
   if (isTe) {
-    return `నమస్కారం! నేను మీ Hema ఫైనాన్షియల్ అసిస్టెంట్‌ని. మీరు నన్ను వీటిపై అడగవచ్చు:
-• ఫిక్స్‌డ్ డిపాజిట్ vs బంగారం పొదుపు
-• ₹2 రూపాయల వడ్డీ లెక్కలు
-• నెలవారీ కిరాణా మరియు ఇంటి ఖర్చుల నియంత్రణ
-• మీ గృహ బడ్జెట్ మరియు అప్పుల వివరాలు`;
+    return `నమస్కారం! నేను మీ Hema ఫైనాన్షియల్ అసిస్టెంట్‌ని. బంగారం ధరలు, ₹2 వడ్డీ, గృహ బడ్జెట్ లేదా పొదుపు గురించి ఏదైనా అడగండి.`;
   }
 
   if (isHi) {
-    return `नमस्ते! मैं आपकी हेमा फाइनेंशियल असिस्टेंट हूँ। आप मुझसे पूछ सकते हैं:
-• फिक्स्ड डिपॉजिट बनाम सोना निवेश
-• ₹2 ब्याज की सटीक गणना
-• मासिक किराना और घरेलू बजट नियंत्रण
-• आपके खाते का आय-व्यय विवरण`;
+    return `नमस्ते! मैं आपकी हेमा (Hema) हूँ। सोने के भाव, ₹2 ब्याज, घरेलू बजट या बचत के बारे में कुछ भी पूछें।`;
   }
 
-  return `Namaste! I am your Hema Financial Assistant. You can ask me about:
-• Comparing Fixed Deposits vs Gold
-• Calculating informal ₹ Vaddi interest
-• Setting a monthly Kirana/Grocery budget
-• Tax savings under Indian New vs Old Tax regime`;
+  return `Namaste! I am your Hema Financial Assistant. Feel free to ask about gold rates, informal ₹ Vaddi calculations, monthly budgets, or household savings.`;
 }
