@@ -22,7 +22,8 @@ import {
   Eye,
   Check,
   ShieldCheck,
-  Navigation
+  Navigation,
+  RotateCcw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -322,9 +323,21 @@ const Debts: React.FC = () => {
     }
   };
 
-  const handleSettle = async (id: string) => {
-    await updateDebtStatus(id, 'SETTLED');
-    fetchDebts();
+  const handleOpenSettleWithProof = (debt: DebtRecordItem) => {
+    const { remaining } = getDebtBalance(debt);
+    setRepaymentDebt(debt);
+    setPayAmount(String(remaining > 0 ? remaining : debt.amount));
+    setPayNotes('Full final settlement');
+    setProofPhoto(null);
+    setCoords(null);
+    setVerifiedTimestamp(Date.now());
+  };
+
+  const handleReopenDebt = async (debt: DebtRecordItem) => {
+    if (window.confirm(`Reopen loan for "${debt.person}" and return it to Active loans? You will be able to edit details or adjust payment entries.`)) {
+      await updateDebtStatus(debt.id, 'PENDING');
+      fetchDebts();
+    }
   };
 
   // Record Payment with Proof Photo + Geolocation + Timestamp
@@ -446,22 +459,35 @@ const Debts: React.FC = () => {
             const payments = debt.payments || [];
 
             return (
-              <div key={debt.id} className="flex flex-col p-4 bg-surface rounded-2xl border border-borderLight shadow-sm space-y-3">
+              <div 
+                key={debt.id} 
+                className={cn(
+                  "flex flex-col p-4 rounded-2xl border transition-all space-y-3",
+                  debt.status === 'SETTLED' 
+                    ? "bg-gradient-to-br from-green-50/40 via-white to-green-50/20 border-green-200 shadow-sm" 
+                    : "bg-surface border-borderLight shadow-sm"
+                )}
+              >
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-3">
-                    <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center shrink-0 mt-0.5">
+                    <div className={cn(
+                      "w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-0.5",
+                      debt.status === 'SETTLED' ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"
+                    )}>
                       <Users size={18} />
                     </div>
                     <div>
                       <div className="flex items-center space-x-2">
                         <p className="font-bold text-textMain text-sm">{debt.person}</p>
-                        <button 
-                          onClick={() => handleOpenEdit(debt)} 
-                          className="text-textMuted hover:text-primary-600 p-1"
-                          title="Edit Loan Details"
-                        >
-                          <Edit2 size={13} />
-                        </button>
+                        {debt.status !== 'SETTLED' && (
+                          <button 
+                            onClick={() => handleOpenEdit(debt)} 
+                            className="text-textMuted hover:text-primary-600 p-1"
+                            title="Edit Loan Details"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                        )}
                         <button 
                           onClick={() => handleDelete(debt.id)} 
                           className="text-textMuted hover:text-red-500 p-1"
@@ -582,12 +608,34 @@ const Debts: React.FC = () => {
                   </p>
                 )}
 
-                {/* Actions: Partial Payment, WhatsApp Remind, Mark Settled */}
-                {debt.status !== 'SETTLED' && (
+                {/* Settled Summary Banner */}
+                {debt.status === 'SETTLED' && (
+                  <div className="bg-emerald-50/90 border border-emerald-200/90 rounded-xl p-3 flex items-center justify-between text-xs text-emerald-950">
+                    <div>
+                      <p className="font-extrabold text-xs text-emerald-800 flex items-center">
+                        <CheckCircle2 size={13} className="mr-1 text-emerald-600" />
+                        Loan Fully Closed & Settled
+                      </p>
+                      <p className="text-[11px] text-emerald-700 mt-0.5">
+                        Original Principal: ₹{(debt.principalAmount || debt.amount).toLocaleString('en-IN')}
+                        {debt.interestAmount ? ` + Interest: ₹${debt.interestAmount.toLocaleString('en-IN')}` : ''}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-bold text-[10px] uppercase tracking-wider text-emerald-900">Total Cleared</p>
+                      <p className="font-extrabold text-base text-emerald-700">₹{totalDue.toLocaleString('en-IN')}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Actions: Partial Payment, WhatsApp Remind, Settle with Proof for Active; Reopen for Settled */}
+                {debt.status !== 'SETTLED' ? (
                   <div className="flex items-center justify-end space-x-2 border-t border-borderLight pt-2.5">
                     <button 
                       onClick={() => {
                         setRepaymentDebt(debt);
+                        setPayAmount('');
+                        setPayNotes('');
                         setProofPhoto(null);
                         setCoords(null);
                         setVerifiedTimestamp(null);
@@ -610,12 +658,27 @@ const Debts: React.FC = () => {
                     </a>
 
                     <button 
-                      onClick={() => handleSettle(debt.id)}
-                      className="bg-primary-100 text-primary-700 rounded-lg px-3 py-2 flex items-center justify-center hover:bg-primary-200 transition-colors"
-                      title="Mark as completely settled"
+                      onClick={() => handleOpenSettleWithProof(debt)}
+                      className="bg-primary-600 hover:bg-primary-700 text-white rounded-lg px-3 py-2 flex items-center justify-center transition-all shadow-soft active:scale-95"
+                      title="Mark as completely settled with proof verification"
                     >
-                      <CheckCircle2 size={14} className="mr-1" />
-                      <span className="text-xs font-bold">Settle</span>
+                      <CheckCircle2 size={14} className="mr-1 text-white" />
+                      <span className="text-xs font-bold">Settle with Proof</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between border-t border-emerald-200/60 pt-2.5 bg-emerald-50/40 -mx-4 -mb-4 p-3 rounded-b-2xl">
+                    <span className="text-xs font-bold text-emerald-900 flex items-center">
+                      <ShieldCheck size={14} className="mr-1.5 text-emerald-600" />
+                      Verified Settled ({payments.length} payment records)
+                    </span>
+                    <button 
+                      onClick={() => handleReopenDebt(debt)}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95"
+                      title="Move back to Active loans to edit or adjust payments"
+                    >
+                      <RotateCcw size={12} className="text-amber-700" />
+                      <span>Reopen to Active</span>
                     </button>
                   </div>
                 )}

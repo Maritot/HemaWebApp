@@ -34,6 +34,7 @@ export interface HemaDB extends DBSchema {
       id: string;
       amount: number;
       categoryId: string;
+      label?: string;
       type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
       date: number;
       notes: string;
@@ -242,12 +243,21 @@ export const updatePersonAndGifts = async (updatedPerson: PersonRecord, oldName?
   }
 };
 
-export const deletePerson = async (id: string) => {
+export const deletePerson = async (id: string, personName?: string) => {
   deleteLocalPerson(id);
   try {
     const db = await initDB();
     if (db.objectStoreNames.contains('people')) {
       await db.delete('people', id);
+    }
+    // Cascade delete associated gifts to prevent orphaned records & auto-resurrection
+    if (db.objectStoreNames.contains('gifts')) {
+      const allGifts = await db.getAll('gifts');
+      for (const g of allGifts) {
+        if (g.personId === id || (personName && g.person && g.person.toLowerCase() === personName.toLowerCase())) {
+          await db.delete('gifts', g.id);
+        }
+      }
     }
   } catch (err) {
     console.warn('IndexedDB deletePerson fallback:', err);

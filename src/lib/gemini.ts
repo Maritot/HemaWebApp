@@ -76,6 +76,7 @@ export const setActiveModelName = (modelName: string): void => {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
+  lang?: 'en' | 'hi' | 'te';
 }
 
 /**

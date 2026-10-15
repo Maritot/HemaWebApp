@@ -81,26 +81,7 @@ const Gifts: React.FC = () => {
 
   const loadAllData = async () => {
     const [peopleData, giftsData] = await Promise.all([getPeople(), getGifts()]);
-    
-    // If no people exist yet, let's auto-generate a couple of starter relatives from existing gifts or sample
-    if (peopleData.length === 0 && giftsData.length > 0) {
-      const distinctNames = Array.from(new Set(giftsData.map(g => g.person)));
-      const created: PersonRecord[] = [];
-      for (const name of distinctNames) {
-        const p: PersonRecord = {
-          id: crypto.randomUUID(),
-          name,
-          relationship: 'Family',
-          createdAt: Date.now()
-        };
-        await addPerson(p);
-        created.push(p);
-      }
-      setPeople(created);
-    } else {
-      setPeople(peopleData.sort((a, b) => a.name.localeCompare(b.name)));
-    }
-
+    setPeople(peopleData.sort((a, b) => a.name.localeCompare(b.name)));
     setGifts(giftsData.sort((a, b) => b.date - a.date));
   };
 
@@ -161,14 +142,14 @@ const Gifts: React.FC = () => {
     }
   };
 
-  const handleDeletePerson = async (id: string, e: React.MouseEvent) => {
+  const handleDeletePerson = async (person: PersonRecord, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('Remove this person from your Gift Ledger?')) {
-      await deletePerson(id);
-      if (selectedPerson?.id === id) {
+    if (window.confirm(`Delete "${person.name}" and remove all their gift entries from your ledger?`)) {
+      await deletePerson(person.id, person.name);
+      if (selectedPerson?.id === person.id) {
         setSelectedPerson(null);
       }
-      loadAllData();
+      await loadAllData();
     }
   };
 
@@ -242,7 +223,7 @@ const Gifts: React.FC = () => {
     // Auto title if user left it blank
     let finalItem = itemTitle.trim();
     if (!finalItem) {
-      if (giftCategory === 'CASH') finalItem = 'Cash Envelop (Shagun)';
+      if (giftCategory === 'CASH') finalItem = 'Cash Envelope';
       else if (giftCategory === 'GOLD') finalItem = `Gold (${weightGrams ? weightGrams + 'g' : purity})`;
       else if (giftCategory === 'SILVER') finalItem = `Silver (${weightGrams ? weightGrams + 'g' : 'Item'})`;
       else if (giftCategory === 'CLOTHES') finalItem = 'Clothes / Saree';
@@ -307,8 +288,8 @@ const Gifts: React.FC = () => {
         <>
           <div className="flex justify-between items-center mb-1">
             <div>
-              <h2 className="text-2xl font-bold text-textMain tracking-tight">Gift Ledger</h2>
-              <p className="text-textMuted text-xs">Shagun & Relationship People Cards</p>
+              <h2 className="text-2xl font-bold text-textMain tracking-tight">{t('gifts.title')}</h2>
+              <p className="text-textMuted text-xs">{t('gifts.subtitle')}</p>
             </div>
             <button 
               onClick={() => setShowAddPersonModal(true)}
@@ -339,7 +320,7 @@ const Gifts: React.FC = () => {
               </div>
               <h3 className="font-bold text-textMain text-base">No People Added Yet</h3>
               <p className="text-textMuted text-xs mt-1 max-w-xs mx-auto">
-                Add your relatives, friends, or neighbours to record Shagun (cash, gold, silver, sarees) given and received.
+                Add your relatives, friends, or neighbours to record cultural gifts (cash, gold, silver, clothes) given and received.
               </p>
               <button 
                 onClick={() => setShowAddPersonModal(true)}
@@ -371,7 +352,7 @@ const Gifts: React.FC = () => {
                         </button>
                         <button 
                           type="button"
-                          onClick={(e) => handleDeletePerson(person.id, e)}
+                          onClick={(e) => handleDeletePerson(person, e)}
                           className="text-textMuted hover:text-red-500 p-1 rounded-full hover:bg-red-50 bg-white/90 shadow-2xs"
                           title="Delete person"
                         >
@@ -396,7 +377,7 @@ const Gifts: React.FC = () => {
                         {person.relationship || 'Relative'}
                       </span>
 
-                      {/* Quick Shagun Summary */}
+                      {/* Quick Gift Summary */}
                       <div className="mt-3 pt-2.5 border-t border-borderLight w-full flex justify-around text-[10px]">
                         <div>
                           <p className="text-textMuted">Recv</p>
@@ -458,6 +439,14 @@ const Gifts: React.FC = () => {
                   >
                     <Pencil size={13} />
                   </button>
+                  <button 
+                    type="button"
+                    onClick={(e) => handleDeletePerson(selectedPerson, e)}
+                    className="p-1 rounded-full text-red-600 hover:text-red-700 bg-white/90 hover:bg-white border border-red-200/80 shadow-2xs transition-all active:scale-95"
+                    title="Delete person and gifts"
+                  >
+                    <Trash2 size={13} />
+                  </button>
                   <span className="text-[10px] bg-primary-100 text-primary-800 font-bold px-2 py-0.5 rounded-full">
                     {selectedPerson.relationship}
                   </span>
@@ -465,7 +454,7 @@ const Gifts: React.FC = () => {
                 {selectedPerson.phone && (
                   <p className="text-xs text-textMuted mt-0.5">{selectedPerson.phone}</p>
                 )}
-                {/* Total Shagun exchange */}
+                {/* Total Gift exchange */}
                 {(() => {
                   const stats = getPersonGiftStats(selectedPerson);
                   return (
@@ -482,7 +471,7 @@ const Gifts: React.FC = () => {
           {/* History of gifts with this person */}
           <div>
             <div className="flex justify-between items-center mb-3 px-1">
-              <h4 className="text-sm font-bold text-textMain uppercase tracking-wider">Gift History (Shagun)</h4>
+              <h4 className="text-sm font-bold text-textMain uppercase tracking-wider">Gift History</h4>
               <span className="text-xs text-textMuted">
                 {getPersonGiftStats(selectedPerson).personGifts.length} transactions
               </span>
@@ -865,7 +854,7 @@ const Gifts: React.FC = () => {
                       giftCategory === 'GOLD' ? 'e.g. Gold Ring, Gold Coin, Chain' :
                       giftCategory === 'SILVER' ? 'e.g. Silver Lamp (Diya), Silver Coin, Glass' :
                       giftCategory === 'CLOTHES' ? 'e.g. Pattu Saree, Kurta set' :
-                      giftCategory === 'CASH' ? 'e.g. Shagun Envelop' :
+                      giftCategory === 'CASH' ? 'e.g. Cash Envelope' :
                       'e.g. Home Appliance, Sweet Box'
                     }
                     className="w-full mt-1 p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-sm"

@@ -51,7 +51,16 @@ const AppContent: React.FC = () => {
     <div className="flex flex-col h-screen bg-background text-textMain font-sans overflow-hidden">
       {/* Header */}
       <header className="bg-surface shadow-xs py-3 px-5 sm:px-6 flex justify-between items-center z-10 shrink-0 border-b border-borderLight">
-        <h1 className="text-xl sm:text-2xl font-bold text-primary-600 tracking-tight">Hema</h1>
+        <NavLink to="/" className="flex items-center space-x-2.5 group">
+          <img 
+            src="/hema-logo.gif" 
+            alt="Hema Finance" 
+            className="w-8 h-8 rounded-full object-contain shadow-xs group-hover:scale-105 transition-transform" 
+          />
+          <span className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-amber-600 via-primary-600 to-amber-700 bg-clip-text text-transparent tracking-tight">
+            Hema
+          </span>
+        </NavLink>
         <div className="flex items-center space-x-2">
           {isPinEnabled() && (
             <button

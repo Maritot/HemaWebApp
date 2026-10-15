@@ -78,8 +78,8 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
       }
     } catch (e) {}
 
-    const lang = localStorage.getItem('hema_assistant_chat_language') || 'en';
-    return [{ role: 'assistant', text: getInitialGreeting(lang) }];
+    const lang = (localStorage.getItem('hema_assistant_chat_language') as 'en' | 'hi' | 'te') || 'en';
+    return [{ role: 'assistant', text: getInitialGreeting(lang), lang }];
   });
   const [isTyping, setIsTyping] = useState(false);
 
@@ -169,7 +169,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
 
   const handleClearChat = () => {
     if (window.confirm('Clear conversation and start fresh?')) {
-      const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage) }];
+      const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage), lang: chatLanguage }];
       setMessages(reset);
       try {
         localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(reset));
@@ -187,8 +187,9 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     const textToSend = (customPrompt || input).trim();
     if (!textToSend || isTyping) return;
 
-    const userMsg: ChatMessage = { role: 'user', text: textToSend };
-    const emptyAssistantMsg: ChatMessage = { role: 'assistant', text: '' };
+    const currentLang = chatLanguage;
+    const userMsg: ChatMessage = { role: 'user', text: textToSend, lang: currentLang };
+    const emptyAssistantMsg: ChatMessage = { role: 'assistant', text: '', lang: currentLang };
     const historySnapshot = [...messages, userMsg];
     const assistantMsgIndex = historySnapshot.length;
 
@@ -210,20 +211,20 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
           setMessages(prev => {
             const copy = [...prev];
             if (copy[assistantMsgIndex]) {
-              copy[assistantMsgIndex] = { role: 'assistant', text: chunkText };
+              copy[assistantMsgIndex] = { role: 'assistant', text: chunkText, lang: currentLang };
             }
             return copy;
           });
         },
         controller.signal, 
-        chatLanguage
+        currentLang
       );
 
       if (!streamedBuffer && finalResponse) {
         setMessages(prev => {
           const copy = [...prev];
           if (copy[assistantMsgIndex]) {
-            copy[assistantMsgIndex] = { role: 'assistant', text: finalResponse };
+            copy[assistantMsgIndex] = { role: 'assistant', text: finalResponse, lang: currentLang };
           }
           return copy;
         });
@@ -233,7 +234,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
         setMessages(prev => {
           const copy = [...prev];
           if (copy[assistantMsgIndex] && !copy[assistantMsgIndex].text) {
-            copy[assistantMsgIndex] = { role: 'assistant', text: '⏹ Response stopped by user.' };
+            copy[assistantMsgIndex] = { role: 'assistant', text: '⏹ Response stopped by user.', lang: currentLang };
           }
           return copy;
         });
@@ -241,7 +242,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
         setMessages(prev => {
           const copy = [...prev];
           if (copy[assistantMsgIndex]) {
-            copy[assistantMsgIndex] = { role: 'assistant', text: 'I encountered an issue processing that. Please try again.' };
+            copy[assistantMsgIndex] = { role: 'assistant', text: 'I encountered an issue processing that. Please try again.', lang: currentLang };
           }
           return copy;
         });
@@ -350,9 +351,9 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     },
     { 
       icon: Gift, 
-      title: 'Traditional Shagun Rules', 
-      desc: 'Reciprocal family etiquette', 
-      query: 'What is the traditional etiquette for reciprocal Shagun gifts at Indian family events?' 
+      title: 'Traditional Gift Etiquette', 
+      desc: 'Reciprocal family etiquette (+₹1)', 
+      query: 'What is the traditional etiquette for reciprocal gifts at Indian family events?' 
     }
   ];
 
@@ -492,7 +493,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                     </div>
                     <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
                     <span className="text-[9px] bg-primary-50 text-primary-800 font-extrabold px-1.5 py-0.2 rounded border border-primary-200/60 uppercase">
-                      {chatLanguage}
+                      {msg.lang || chatLanguage}
                     </span>
                   </div>
 

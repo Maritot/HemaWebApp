@@ -85,9 +85,11 @@ const Settings: React.FC = () => {
     const gifts = await getGifts();
 
     let csv = '--- TRANSACTIONS ---\n';
-    csv += 'Date,Type,Category,Amount,Notes\n';
+    csv += 'Date,Type,Category,Original Label,Amount,Notes\n';
     txs.forEach(tx => {
-      csv += `${new Date(tx.date).toISOString()},${tx.type},${tx.categoryId},${tx.amount},${tx.notes || ''}\n`;
+      const cleanLabel = (tx.label || tx.categoryId || '').replace(/"/g, '""');
+      const cleanNotes = (tx.notes || '').replace(/"/g, '""');
+      csv += `${new Date(tx.date).toISOString()},${tx.type},${tx.categoryId},"${cleanLabel}",${tx.amount},"${cleanNotes}"\n`;
     });
 
     csv += '\n--- DEBTS ---\n';
@@ -96,7 +98,7 @@ const Settings: React.FC = () => {
       csv += `${new Date(d.dateCreated).toISOString()},${d.type},${d.person},${d.principalAmount || d.amount},${d.amount},${d.status},${new Date(d.dueDate).toISOString()}\n`;
     });
 
-    csv += '\n--- GIFTS (SHAGUN) ---\n';
+    csv += '\n--- GIFTS & FAMILY CONTRIBUTIONS ---\n';
     csv += 'Date,Type,Person,Category,Item,Amount,Occasion\n';
     gifts.forEach(g => {
       csv += `${new Date(g.date).toISOString()},${g.type},${g.person},${g.category || 'OTHER'},${g.item || ''},${g.amount},${g.occasion}\n`;
@@ -197,7 +199,7 @@ const Settings: React.FC = () => {
       setNotifPermission(res);
       if (res === 'granted') {
         new Notification('Hema Finance Alerts Active', {
-          body: 'You will receive timely reminders for due loans and family Shagun gifts.',
+          body: 'You will receive timely reminders for due loans and upcoming family gifts.',
           icon: '/hema-icon-192.png'
         });
       }
