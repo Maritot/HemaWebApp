@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { FormattedChatMessage } from '@/components/FormattedChatMessage';
+import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { 
   queryGeminiStream,
   getGeminiApiKey, 
@@ -65,6 +66,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showCompliance, setShowCompliance] = useState(true);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   
   // Persisted chat history across tabs and app navigation
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -152,7 +154,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     localStorage.setItem('hema_assistant_chat_language', code);
     // If only initial greeting exists, refresh it in the new language
     if (messages.length === 1 && messages[0].role === 'assistant') {
-      const updatedGreeting = [{ role: 'assistant' as const, text: getInitialGreeting(code) }];
+      const updatedGreeting = [{ role: 'assistant' as const, text: getInitialGreeting(code), lang: code }];
       setMessages(updatedGreeting);
     }
   };
@@ -167,14 +169,13 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     }
   };
 
-  const handleClearChat = () => {
-    if (window.confirm('Clear conversation and start fresh?')) {
-      const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage), lang: chatLanguage }];
-      setMessages(reset);
-      try {
-        localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(reset));
-      } catch (e) {}
-    }
+  const handleConfirmClearChat = () => {
+    const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage), lang: chatLanguage }];
+    setMessages(reset);
+    try {
+      localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(reset));
+    } catch (e) {}
+    setShowClearConfirm(false);
   };
 
   const handleInputFocus = () => {
@@ -406,7 +407,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
 
             <button
               type="button"
-              onClick={handleClearChat}
+              onClick={() => setShowClearConfirm(true)}
               className="p-1 text-textMuted hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200"
               title="Clear conversation"
             >
@@ -746,6 +747,16 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
           </div>
         </div>
       )}
+      
+      {/* Clear Chat Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={showClearConfirm}
+        title="Clear Conversation?"
+        message="Are you sure you want to clear the conversation history and start fresh?"
+        itemName="All Assistant Messages"
+        onConfirm={handleConfirmClearChat}
+        onCancel={() => setShowClearConfirm(false)}
+      />
 
     </div>
   );

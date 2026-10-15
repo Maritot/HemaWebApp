@@ -80,19 +80,86 @@ export interface ChatMessage {
 }
 
 /**
+ * Real-time Script and Language Guardrail Detector:
+ * Checks Unicode script ranges to detect script drift or language deviation instantly.
+ * Devanagari range: \u0900-\u097F
+ * Telugu range: \u0C00-\u0C7F
+ */
+export function detectLanguageViolation(
+  text: string, 
+  targetLang: string = 'en'
+): { isViolation: boolean; reason?: string } {
+  if (!text || text.trim().length === 0) return { isViolation: false };
+
+  const clean = text.replace(/```[\s\S]*?```/g, '').replace(/https?:\/\/\S+/g, '');
+  const devanagariCount = (clean.match(/[\u0900-\u097F]/g) || []).length;
+  const teluguCount = (clean.match(/[\u0C00-\u0C7F]/g) || []).length;
+
+  if (targetLang === 'en') {
+    // English responses MUST NEVER contain Devanagari (Hindi) or Telugu characters
+    if (devanagariCount > 3) {
+      return { isViolation: true, reason: `Devanagari characters (${devanagariCount}) detected in English mode` };
+    }
+    if (teluguCount > 3) {
+      return { isViolation: true, reason: `Telugu characters (${teluguCount}) detected in English mode` };
+    }
+  } else if (targetLang === 'hi') {
+    // Hindi responses MUST NEVER contain Telugu script
+    if (teluguCount > 3) {
+      return { isViolation: true, reason: `Telugu characters (${teluguCount}) detected in Hindi mode` };
+    }
+    // If response is substantial (>60 chars) and lacks Devanagari, it drifted into English
+    if (clean.length > 60 && devanagariCount < 6) {
+      return { isViolation: true, reason: `Insufficient Devanagari script in Hindi mode` };
+    }
+  } else if (targetLang === 'te') {
+    // Telugu responses MUST NEVER contain Devanagari script
+    if (devanagariCount > 3) {
+      return { isViolation: true, reason: `Devanagari characters (${devanagariCount}) detected in Telugu mode` };
+    }
+    // If response is substantial (>60 chars) and lacks Telugu, it drifted into English
+    if (clean.length > 60 && teluguCount < 6) {
+      return { isViolation: true, reason: `Insufficient Telugu script in Telugu mode` };
+    }
+  }
+
+  return { isViolation: false };
+}
+
+/**
+ * Returns an unmissable, zero-tolerance language enforcement directive
+ */
+export function getTargetLanguageDirective(chatLanguage: string): string {
+  if (chatLanguage === 'te') {
+    return 'CRITICAL DIRECTIVE: Formulate your entire response 100% in natural, respectful TELUGU SCRIPT (తెలుగు లిపి). Absolutely NO English sentences, NO Devanagari script. All calculations in ₹. Zero deviation allowed.';
+  }
+  if (chatLanguage === 'hi') {
+    return 'CRITICAL DIRECTIVE: Formulate your entire response 100% in natural, respectful HINDI DEVANAGARI SCRIPT (देवनागरी लिपि). Absolutely NO English sentences, NO Telugu script. All calculations in ₹. Zero deviation allowed.';
+  }
+  return 'CRITICAL DIRECTIVE: Formulate your entire response 100% in standard ENGLISH ONLY. Absolutely NO Hindi / Devanagari script (e.g. का मतलब, शेयर बाज़ार, आदि). Absolutely NO Telugu script. All calculations in ₹. Zero deviation allowed.';
+}
+
+/**
  * Builds a strictly alternating Gemini payload:
  * 1. Guarantees first turn has role: 'user'
  * 2. Alternates strictly between 'user' and 'model'
  * 3. Never produces consecutive same-role turns
- * 4. Injects household system context cleanly into the conversation
+ * 4. Sanitizes past foreign assistant turns to eliminate script cross-attention poisoning
+ * 5. Embeds mandatory zero-tolerance language directives directly into the active prompt
  */
 export function buildStrictGeminiPayload(
   systemPrompt: string, 
   prompt: string, 
-  rawHistory: ChatMessage[] = []
+  rawHistory: ChatMessage[] = [],
+  chatLanguage: string = 'en'
 ): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
   const firstUserIdx = rawHistory.findIndex(m => m.role === 'user');
-  const pastTurns = firstUserIdx !== -1 ? rawHistory.slice(firstUserIdx) : [];
+  let pastTurns = firstUserIdx !== -1 ? rawHistory.slice(firstUserIdx) : [];
+
+  // Limit past turns to last 6 to keep context sharp and prevent script contamination
+  if (pastTurns.length > 6) {
+    pastTurns = pastTurns.slice(pastTurns.length - 6);
+  }
 
   const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
@@ -100,21 +167,32 @@ export function buildStrictGeminiPayload(
   for (const turn of pastTurns) {
     const role: 'user' | 'model' = turn.role === 'assistant' ? 'model' : 'user';
     if (role === expectedRole) {
-      contents.push({ role, parts: [{ text: turn.text }] });
+      let turnContent = turn.text;
+      // Sanitize past assistant turns if they contain a conflicting script to prevent few-shot bleeding
+      if (role === 'model') {
+        const check = detectLanguageViolation(turnContent, chatLanguage);
+        if (check.isViolation) {
+          turnContent = `[Note: Previous assistant reply regarding household finances was in another language]`;
+        }
+      }
+      contents.push({ role, parts: [{ text: turnContent }] });
       expectedRole = expectedRole === 'user' ? 'model' : 'user';
     }
   }
 
+  const languageDirective = getTargetLanguageDirective(chatLanguage);
+  const activePromptText = `${prompt}\n\n[MANDATORY SYSTEM DIRECTIVE]: ${languageDirective}`;
+
   if (contents.length === 0 || contents[contents.length - 1].role === 'model') {
     contents.push({
       role: 'user',
-      parts: [{ text: prompt }]
+      parts: [{ text: activePromptText }]
     });
   } else {
-    contents[contents.length - 1].parts[0].text = prompt;
+    contents[contents.length - 1].parts[0].text = activePromptText;
   }
 
-  // Prepend system prompt to the first user turn
+  // Prepend system prompt to the first user turn as defense-in-depth alongside top-level system_instruction
   contents[0].parts[0].text = `${systemPrompt}\n\n[User Question]: ${contents[0].parts[0].text}`;
 
   return contents;
@@ -310,11 +388,37 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
 export function buildSystemPrompt(ragContext: string, chatLanguage: string): string {
   let languageDirective = '';
   if (chatLanguage === 'te') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Telugu (తెలుగు) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Telugu script (తెలుగు లిపి). Use warm, polite Telugu terms (నమస్కారం, ఖర్చులు, పొదుపు, వడ్డీ, శుభకార్యాలు). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Telugu!`;
+    languageDirective = `
+======================================================================
+MANDATORY LANGUAGE GUARDRAIL (TELUGU SCRIPT ONLY - ZERO TOLERANCE):
+- The user has selected TELUGU (తెలుగు).
+- You MUST formulate your ENTIRE response exclusively in clear, natural, respectful TELUGU SCRIPT (తెలుగు లిపి).
+- You are STRICTLY FORBIDDEN from using Hindi / Devanagari script (क, ख, ग) or writing responses in English.
+- Even if the user types their prompt in English (e.g. "What is IPO", "What is fd", "expenses"), translate your entire explanation into fluent, respectful Telugu script.
+- Ensure all numbers and currency are formatted with the Indian Rupee symbol (₹).
+======================================================================`;
   } else if (chatLanguage === 'hi') {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: The user has selected Hindi (हिन्दी) as their AI Assistant response language. You MUST formulate your entire response in clear, natural, respectful Hindi script (देवनागरी). Use warm, polite Hindi terms (नमस्ते, खर्च, बचत, ब्याज, शगुन). Ensure numbers and currency are formatted with ₹. Even if the user types in English (e.g. "Hi", "expenses"), translate your response into fluent Hindi!`;
+    languageDirective = `
+======================================================================
+MANDATORY LANGUAGE GUARDRAIL (HINDI DEVANAGARI ONLY - ZERO TOLERANCE):
+- The user has selected HINDI (हिन्दी).
+- You MUST formulate your ENTIRE response exclusively in clear, natural, respectful HINDI DEVANAGARI SCRIPT (देवनागरी लिपि).
+- You are STRICTLY FORBIDDEN from using Telugu script (క, ఖ, గ) or writing full responses in English.
+- Even if the user types their prompt in English (e.g. "What is IPO", "What is fd", "expenses"), translate your entire explanation into fluent, respectful Hindi Devanagari script.
+- Ensure all numbers and currency are formatted with the Indian Rupee symbol (₹).
+======================================================================`;
   } else {
-    languageDirective = `\nCRITICAL LANGUAGE INSTRUCTION: Respond in friendly, clear Indian English with cultural familiarity (Namaste, Kirana, Shagun, Vaddi).`;
+    languageDirective = `
+======================================================================
+MANDATORY LANGUAGE GUARDRAIL (ENGLISH ONLY - ZERO TOLERANCE):
+- The user has selected ENGLISH.
+- You MUST formulate your ENTIRE response 100% in clear, professional, friendly INDIAN ENGLISH.
+- ABSOLUTELY NO HINDI (NO DEVANAGARI SCRIPT, NO HINDI PHRASES like "का मतलब है", "शेयर बाज़ार", "आम जनता", "बचत").
+- ABSOLUTELY NO TELUGU SCRIPT.
+- Every single heading, sentence, bullet point, and disclaimer MUST be written in standard English.
+- Even if previous messages in the chat history or earlier questions were in Hindi or Telugu, the user has explicitly switched to ENGLISH now. Disregard past foreign-language responses and write 100% in ENGLISH.
+- Any Hindi or Telugu word in your response is a severe compliance violation.
+======================================================================`;
   }
 
   return `You are Hema, a wise, caring, and practical household financial companion designed exclusively for Indian families and personal money management.
@@ -352,12 +456,83 @@ CRITICAL ENTERPRISE GUARDRAILS & DOMAIN SCOPE (STRICTLY ENFORCED):
 }
 
 /**
+ * Zero-Tolerance Guardrail Auto-Corrector:
+ * If an LLM response deviates from the selected language (e.g. outputs Hindi when English was selected),
+ * this initiates an instant, single-turn, zero-temperature repair to enforce 100% compliance.
+ */
+export async function autoCorrectLanguage(
+  apiKey: string,
+  modelName: string,
+  userPrompt: string,
+  deviantResponse: string,
+  targetLang: string = 'en',
+  signal?: AbortSignal
+): Promise<string> {
+  const targetSpec = targetLang === 'te' 
+    ? 'natural, respectful TELUGU script (తెలుగు లిపి)' 
+    : targetLang === 'hi' 
+    ? 'natural, respectful HINDI Devanagari script (देवनागरी लिपि)' 
+    : 'clear, professional standard ENGLISH ONLY (absolutely NO Hindi or Telugu script)';
+
+  try {
+    const repairPrompt = `The following financial answer was generated in the wrong language/script.
+You MUST translate and format this explanation strictly and exclusively into ${targetSpec}.
+Preserve key financial figures, bullet points, and brevity.
+Do NOT output any other language.
+
+Explanation to convert:
+${deviantResponse}`;
+
+    const repairUrl = `https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`;
+    const repairPayload = {
+      system_instruction: {
+        parts: [{ text: `You are a strict financial translator. Output your entire reply exclusively in ${targetSpec}. Zero deviation.` }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: repairPrompt }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 400
+      }
+    };
+
+    const res = await fetch(repairUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(repairPayload),
+      signal
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (text) {
+        const check = detectLanguageViolation(text, targetLang);
+        if (!check.isViolation) {
+          return text;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Hema AI Guardrail] Auto-correction pass failed:', e);
+  }
+
+  // Deterministic local financial engine fallback if network repair fails
+  return generateLocalFinancialAdvice(userPrompt, '', targetLang);
+}
+
+/**
  * Enterprise Production Query Engine:
  * 1. AbortSignal support for instantaneous cancellation / pause.
  * 2. Multi-Model Automatic Failover on 503 / 429 demand spikes (3.8-flash <-> 3.6-flash <-> 3.1-flash-lite).
  * 3. Chatbot-specific language conditioning (English, Hindi, Telugu) without altering main app UI.
  * 4. Quota-safe execution: Standard queries NEVER consume grounding tools (avoiding 429 quota errors on free-tier keys).
  * 5. Strict SEBI & Fraud Prevention Guardrails.
+ * 6. Multi-layer Zero-Tolerance Language Guardrails and Post-Generation Auto-Correction.
  */
 export const queryGemini = async (
   prompt: string, 
@@ -376,7 +551,7 @@ export const queryGemini = async (
   }
 
   const systemPrompt = buildSystemPrompt(ragContext, chatLanguage);
-  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
+  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history, chatLanguage);
 
   // Read preferred model and build automatic failover chain
   const primaryModel = getActiveModelName();
@@ -395,11 +570,14 @@ export const queryGemini = async (
     try {
       const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:generateContent?key=${apiKey}`;
 
-      // Clean standard payload without external tools to ensure 100% free-tier compatibility
+      // Clean standard payload with top-level system_instruction and temperature 0.2
       const cleanPayload = {
+        system_instruction: {
+          parts: [{ text: systemPrompt }]
+        },
         contents,
         generationConfig: {
-          temperature: 0.4,
+          temperature: 0.2,
           maxOutputTokens: 400,
           thinkingConfig: {
             thinkingBudget: 0
@@ -420,6 +598,13 @@ export const queryGemini = async (
         if (candidateParts && candidateParts.length > 0) {
           const fullText = candidateParts.map((p: any) => p.text || '').join('').trim();
           if (fullText) {
+            // Guardrail validation check
+            const violation = detectLanguageViolation(fullText, chatLanguage);
+            if (violation.isViolation) {
+              console.warn(`[Hema AI Guardrail] Language deviation detected on ${currentModel}: ${violation.reason}. Auto-correcting...`);
+              return await autoCorrectLanguage(apiKey, currentModel, prompt, fullText, chatLanguage, signal);
+            }
+
             if (i > 0) {
               console.info(`[Hema AI] Successfully failed over to ${currentModel} after spike on ${primaryModel}`);
             }
@@ -441,7 +626,7 @@ export const queryGemini = async (
 
       if (isHighDemandOrQuota && i < modelsToTry.length - 1) {
         console.warn(`[Hema AI] ${currentModel} experiencing demand spike: "${errMsg}". Failing over to ${modelsToTry[i + 1]}...`);
-        continue; // Try next free-tier model seamlessly
+        continue;
       }
 
     } catch (err: any) {
@@ -463,7 +648,7 @@ export const queryGemini = async (
  * Ultra-Fast Streaming Query Engine:
  * 1. Uses Gemini streamGenerateContent?alt=sse for instant <400ms time-to-first-token.
  * 2. thinkingBudget: 0 disables multi-second reasoning pauses.
- * 3. Calls onChunk callback in real-time as text streams in.
+ * 3. Real-time language guardrail interception: aborts and auto-corrects rogue script before display.
  * 4. Multi-model automatic failover if primary encounters 503/429 spikes.
  */
 export const queryGeminiStream = async (
@@ -483,7 +668,7 @@ export const queryGeminiStream = async (
   }
 
   const systemPrompt = buildSystemPrompt(ragContext, chatLanguage);
-  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history);
+  const contents = buildStrictGeminiPayload(systemPrompt, prompt, history, chatLanguage);
   const primaryModel = getActiveModelName();
   const fallbackList = FREE_TIER_MODELS.map(m => m.name).filter(m => m !== primaryModel);
   const modelsToTry = [primaryModel, ...fallbackList];
@@ -499,9 +684,12 @@ export const queryGeminiStream = async (
       const streamUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
       const cleanPayload = {
+        system_instruction: {
+          parts: [{ text: systemPrompt }]
+        },
         contents,
         generationConfig: {
-          temperature: 0.4,
+          temperature: 0.2,
           maxOutputTokens: 400,
           thinkingConfig: {
             thinkingBudget: 0
@@ -521,6 +709,7 @@ export const queryGeminiStream = async (
         const decoder = new TextDecoder('utf-8');
         let accumulatedText = '';
         let buffer = '';
+        let driftDetected = false;
 
         while (true) {
           const { value, done } = await reader.read();
@@ -540,15 +729,44 @@ export const queryGeminiStream = async (
                   const textChunk = chunkObj.candidates?.[0]?.content?.parts?.[0]?.text;
                   if (textChunk) {
                     accumulatedText += textChunk;
+                    
+                    // Real-time script guardrail check
+                    const check = detectLanguageViolation(accumulatedText, chatLanguage);
+                    if (check.isViolation) {
+                      driftDetected = true;
+                      console.warn(`[Hema AI Guardrail] Stream language drift detected: ${check.reason}. Intercepting output...`);
+                      reader.cancel().catch(() => {});
+                      break;
+                    }
+
                     onChunk(accumulatedText);
                   }
                 } catch (e) {}
               }
             }
           }
+
+          if (driftDetected) {
+            break;
+          }
+        }
+
+        // If drift occurred during streaming, auto-correct immediately
+        if (driftDetected) {
+          const corrected = await autoCorrectLanguage(apiKey, currentModel, prompt, accumulatedText, chatLanguage, signal);
+          onChunk(corrected);
+          return corrected;
         }
 
         if (accumulatedText.trim()) {
+          // Final validation check on accumulated result
+          const finalCheck = detectLanguageViolation(accumulatedText.trim(), chatLanguage);
+          if (finalCheck.isViolation) {
+            console.warn(`[Hema AI Guardrail] Final output language deviation: ${finalCheck.reason}. Auto-correcting...`);
+            const corrected = await autoCorrectLanguage(apiKey, currentModel, prompt, accumulatedText.trim(), chatLanguage, signal);
+            onChunk(corrected);
+            return corrected;
+          }
           return accumulatedText.trim();
         }
       }
@@ -570,34 +788,110 @@ export const queryGeminiStream = async (
 
 /**
  * Intelligent Local Ledger-Aware Fallback Engine
+ * 100% deterministic, human-crafted financial wisdom in English, Hindi, and Telugu.
  */
 export function generateLocalFinancialAdvice(query: string, ragContext: string = '', chatLanguage: string = 'en'): string {
   const q = query.toLowerCase();
   const isTe = chatLanguage.startsWith('te');
   const isHi = chatLanguage.startsWith('hi');
 
+  // IPO, Stocks & Shares
+  if (q.includes('ipo') || q.includes('share') || q.includes('stock') || q.includes('market') || q.includes('సెక్యూరిటీలు') || q.includes('షేర్లు') || q.includes('शेयर')) {
+    if (isTe) {
+      return `📈 **IPO (ఇనీషియల్ పబ్లిక్ ఆఫరింగ్) గృహ మార్గదర్శకం:**
+• ఒక ప్రైవేట్ కంపెనీ వ్యాపార విస్తరణ కోసం మొదటిసారిగా స్టాక్ మార్కెట్లో సాధారణ ప్రజలకు షేర్లను విక్రయించడాన్ని **IPO** అంటారు.
+• **ముఖ్యమైన అంశాలు:** దరఖాస్తు చేసే ముందు కంపెనీ గత 3-5 ఏళ్ల లాభాలు, ప్రమోటర్ల చరిత్ర (RHP) తప్పక పరిశీలించండి.
+• **షేర్ల కేటాయింపు:** అధికంగా దరఖాస్తులు వచ్చినప్పుడు కంప్యూటర్ లాటరీ పద్ధతి ద్వారా షేర్లు కేటాయించబడతాయి.
+• **జాగ్రత్త:** అత్యవసర నిధిని మినహాయించి, మిగులు పొదుపు మొత్తాన్ని మాత్రమే పెట్టుబడి పెట్టండి.
+*(గమనిక: ఇది కేవలం విద్యాసంబంధిత గృహ ఆర్థిక నిర్వహణ కోసం మాత్రమే).*`;
+    }
+    if (isHi) {
+      return `📈 **IPO (आरंभिक सार्वजनिक पेशकश) गाइड:**
+• **IPO** तब होता है जब कोई निजी कंपनी पूंजी जुटाने के लिए पहली बार शेयर बाज़ार (NSE/BSE) में आम जनता के लिए शेयर पेश करती है।
+• **मुख्य बातें:**
+  * **कंपनी का ट्रैक रिकॉर्ड:** आवेदन करने से पहले कंपनी का रेड हेरिंग प्रॉस्पेक्टस (RHP) और मुनाफ़ा ज़रूर देखें।
+  * **आवंटन:** अत्यधिक आवेदन होने पर लॉटरी सिस्टम द्वारा शेयर आवंटित किए जाते हैं।
+  * **सुरक्षा:** आपातकालीन फंड को छुए बिना केवल अतिरिक्त बचत का ही निवेश करें।
+*(नोट: यह जानकारी केवल शैक्षिक घरेलू वित्तीय प्रबंधन के लिए है!)*`;
+    }
+    return `📈 **IPO (Initial Public Offering) Guide:**
+• An **IPO** occurs when an unlisted company sells shares to the public for the first time to raise capital and list on the stock exchange (NSE/BSE).
+• **Key Considerations:**
+  * **Fundamentals:** Review the company's Red Herring Prospectus (RHP), promoter integrity, and 3-5 year profit growth.
+  * **Allotment:** In case of oversubscription, shares are allotted via an automated computerized lottery.
+  * **Prudence:** Never invest borrowed money; invest only surplus savings after securing your family emergency fund.
+*(Note: For educational household financial management only).*`;
+  }
+
+  // Fixed Deposits (FD)
+  if (q.includes('fd') || q.includes('fixed deposit') || q.includes('డిపాజిట్') || q.includes('ఫిక్స్డ్') || q.includes('फिक्स्ड')) {
+    if (isTe) {
+      return `🏦 **గృహ ఫిక్స్‌డ్ డిపాజిట్ (FD) మార్గదర్శకం:**
+• **FD** అనేది మార్కెట్ హెచ్చుతగ్గులతో సంబంధం లేకుండా స్థిరమైన, హామీతో కూడిన వడ్డీని అందించే అత్యంత సురక్షితమైన సాధనం.
+• **సీనియర్ సిటిజన్ల ప్రయోజనం:** 60 ఏళ్లు పైబడిన పెద్దలకు బ్యాంకులు అదనంగా 0.50% ఎక్కువ వడ్డీని చెల్లిస్తాయి.
+• **అత్యవసర సౌలభ్యం:** అవసరమైనప్పుడు FD పై 90% వరకు లోన్ తీసుకోవచ్చు లేదా స్వల్ప పెనాల్టీతో ముందే విత్‌డ్రా చేసుకోవచ్చు.
+*(గమనిక: ఇది కేవలం విద్యాసంబంధిత గృహ ఆర్థిక నిర్వహణ కోసం మాత్రమే).*`;
+    }
+    if (isHi) {
+      return `🏦 **पारिवारिक फिक्स्ड डिपॉजिट (FD) गाइड:**
+• **FD** बाज़ार के उतार-चढ़ाव से परे एक निश्चित अवधि के लिए सुरक्षित और गारंटीड रिटर्न प्रदान करता है।
+• **वरिष्ठ नागरिक लाभ:** भारतीय बैंक वरिष्ठ नागरिकों (60 वर्ष से अधिक) को 0.50% अतिरिक्त ब्याज प्रदान करते हैं।
+• **आपातकालीन नकदी:** जरूरत पड़ने पर आप अपनी FD पर 90% तक ऋण ले सकते हैं या मामूली शुल्क देकर समय से पहले तोड़ सकते हैं।
+*(नोट: यह जानकारी केवल शैक्षिक घरेलू वित्तीय प्रबंधन के लिए है!)*`;
+    }
+    return `🏦 **Fixed Deposit (FD) Guide for Families:**
+• An **FD (Fixed Deposit)** is a safe financial tool where you deposit a lump sum with a bank for a fixed tenure at a guaranteed interest rate.
+• **Key Features:**
+  * **Guaranteed Returns:** Rate remains fixed regardless of market fluctuations.
+  * **Senior Citizens:** Banks typically provide an extra 0.50% interest for adults aged 60+.
+  * **Liquidity:** You can withdraw prematurely with a minor penalty, or take a loan up to 90% against your FD.
+*(Note: For educational household management only).*`;
+  }
+
+  // Mutual Funds & SIP
+  if (q.includes('sip') || q.includes('mutual fund') || q.includes('మ్యూచువల్') || q.includes('సిప్') || q.includes('म्यूचुअल')) {
+    if (isTe) {
+      return `📊 **మ్యూచువల్ ఫండ్ SIP మార్గదర్శకం:**
+• **SIP (సిస్టమాటిక్ ఇన్వెస్ట్‌మెంట్ ప్లాన్):** ప్రతి నెలా చిన్న మొత్తంతో (ఉదా. ₹500 - ₹2,000) దీర్ఘకాలిక సంపద సృష్టించడానికి ఇది ఉత్తమ మార్గం.
+• **రూపీ కాస్ట్ యావరేజింగ్:** మార్కెట్ హెచ్చుతగ్గుల ప్రభావం తగ్గి సగటు ధర స్థిరపడుతుంది.
+• **గమనిక:** పిల్లల చదువు లేదా వివాహాల వంటి 5+ సంవత్సరాల లక్ష్యాలకు ఇండెక్స్ లేదా లార్జ్ క్యాప్ ఫండ్లను ఎంచుకోండి.`;
+    }
+    if (isHi) {
+      return `📊 **म्यूचुअल फंड SIP गाइड:**
+• **SIP (सिस्टमैटिक इन्वेस्टमेंट प्लान):** हर महीने छोटी बचत (जैसे ₹500 - ₹2,000) को अनुशासित तरीके से निवेश करने का सबसे सरल माध्यम है।
+• **रुपया लागत औसत:** बाज़ार के उतार-चढ़ाव में जोखिम को संतुलित रखता है।
+• **लक्ष्य आधारित:** 5 वर्ष से अधिक के बच्चों की शिक्षा या पारिवारिक लक्ष्यों के लिए इंडेक्स फंड चुनें।`;
+    }
+    return `📊 **Mutual Fund SIP Guide for Families:**
+• A **SIP (Systematic Investment Plan)** allows disciplined monthly investing (e.g. ₹500 - ₹5,000) into diversified funds.
+• **Rupee Cost Averaging:** Lowers average purchase price during market dips.
+• **Goal Planning:** Ideal for long-term targets (5+ years) like child education or retirement.`;
+  }
+
+  // Gold & Ornaments
   if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat') || q.includes('బంగారం') || q.includes('సోనా')) {
     if (isTe) {
       return `🪙 **భారతీయ గృహాలకు బంగారు మార్గదర్శకం:**
 • సాంప్రదాయకంగా భౌతిక 22K/24K బంగారం ద్రవ్యోల్బణానికి రక్షణగా మరియు అత్యవసర ఆస్తిగా పనిచేస్తుంది.
 • నగల కొనుగోలులో తయారీ ఖర్చులు (తరుగు/Wastage 8% - 18%) పరిశీలించండి.
 • తరుగు లేకుండా స్వచ్ఛమైన పొదుపు కోసం సావరిన్ గోల్డ్ బాండ్లు (SGB) లేదా గోల్డ్ ఈటీఎఫ్ లు ఉత్తమం.
-*(SEBI గమనిక: ఇది కేవలం విద్యా ప్రయోజనాల కొరకు మాత్రమే).*`;
+*(గమనిక: ఇది కేవలం విద్యా ప్రయోజనాల కొరకు మాత్రమే).*`;
     }
     if (isHi) {
       return `🪙 **भारतीय परिवारों के लिए स्वर्ण मार्गदर्शन:**
 • भौतिक 22K/24K सोना मुद्रास्फीति और आपातकालीन सुरक्षा के लिए बेहतरीन माना जाता है।
 • आभूषण खरीदते समय मेकिंग चार्ज (8% - 18%) का ध्यान रखें।
 • शुद्ध निवेश हेतु सॉवरेन गोल्ड बॉन्ड (SGB) या गोल्ड ETF बेहतर विकल्प हैं।
-*(SEBI अनुपालन: केवल शैक्षिक मार्गदर्शन हेतु).*`;
+*(नोट: केवल शैक्षिक मार्गदर्शन हेतु).*`;
     }
     return `🪙 **Gold Guidance for Indian Households:**
 • Historically, physical 22K/24K gold serves as an inflation hedge and emergency collateral in India.
 • When buying gold ornaments, keep making charges (wastage) in mind (usually 8% - 18%).
 • For pure investment without making charges, Sovereign Gold Bonds (SGB) or Gold ETFs offer higher net returns.
-*(SEBI Compliance: Educational overview only, not registered advisory).*`;
+*(Note: For educational household management only).*`;
   }
 
+  // Informal Vaddi & Debt
   if (q.includes('vaddi') || q.includes('interest') || q.includes('debt') || q.includes('loan') || q.includes('వడ్డీ') || q.includes('బ్యాచ్') || q.includes('అప్పు')) {
     if (isTe) {
       return `📊 **వడ్డీ & అప్పుల నిర్వహణ:**
@@ -617,6 +911,7 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • Keep clear records of every installment with date, mode (UPI/Cash), and receiver acknowledgement.`;
   }
 
+  // Budgeting & Expenses
   if (q.includes('spend') || q.includes('expense') || q.includes('budget') || q.includes('saving') || q.includes('ఖర్చు') || q.includes('పొదుపు')) {
     if (isTe) {
       return `💡 **గృహ బడ్జెట్ 50-30-20 నియమం:**
@@ -625,6 +920,13 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • **20% పొదుపు:** ఫిక్స్‌డ్ డిపాజిట్లు లేదా అత్యవసర నిధి.
 • రోజువారీ ఖర్చులను ఎప్పటికప్పుడు Expenses ట్యాబ్‌లో రికార్డ్ చేయండి.`;
     }
+    if (isHi) {
+      return `💡 **घरेलू बजट का 50-30-20 नियम:**
+• **50% बुनियादी जरूरतें:** राशन/किराना, बिजली-पानी बिल, बच्चों की फीस, दवाइयां।
+• **30% ऐच्छिक खर्च:** कपड़े, पारिवारिक सैर-सपाटा, बाहर का खाना।
+• **20% सुरक्षित बचत:** फिक्स्ड डिपॉजिट या इमरजेंसी फंड।
+• हर छोटे-बड़े खर्च को खर्च रजिस्टर में नियमित दर्ज करें।`;
+    }
     return `💡 **Household 50-30-20 Rule for Families:**
 • **50% Essentials:** Kirana/Groceries, Electricity/Water, School fees, Milk, Medicine.
 • **30% Discretionary:** Family dinners, clothes, shopping.
@@ -632,18 +934,24 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • Track everyday cash expenses immediately in the Expenses tab to avoid month-end cash leaks.`;
   }
 
+  // Gifts & Shagun
   if (q.includes('gift') || q.includes('shagun') || q.includes('wedding') || q.includes('శుభకార్యం') || q.includes('చదివింపులు')) {
     if (isTe) {
       return `🎁 **శుభకార్యాల చదివింపులు & బహుమతుల మర్యాద:**
 • మన సంస్కృతిలో చదివింపులను శుభప్రదంగా +₹1 తో (ఉదా. ₹501, ₹1,116, ₹2,101) ఇవ్వడం ఆచారం.
 • ఏదైనా ఫంక్షన్‌కు వెళ్లేముందు Gifts ట్యాబ్‌లో ఆ వ్యక్తి పేరు చూసి, గతంలో వారు ఇచ్చిన దానికి తగినట్లుగా మర్యాద చేయండి.`;
     }
+    if (isHi) {
+      return `🎁 **शगुन एवं उपहार परंपरा:**
+• भारतीय संस्कृति में शगुन की राशि +₹1 जोड़कर (जैसे ₹501, ₹1,101, ₹2,101) निरंतर समृद्धि के आशीर्वाद के रूप में दी जाती है।
+• किसी भी समारोह में जाने से पहले गिफ्ट लेजर में उनका पिछला लेनदेन देखकर यथोचित सम्मान लौटाएं।`;
+    }
     return `🎁 **Shagun & Gift Etiquette:**
 • In Indian culture, Shagun amounts traditionally end with +₹1 (e.g., ₹501, ₹1,116, ₹2,101) as a blessing for continuous prosperity.
 • Check the Gift Ledger under the person's name before attending a function to reciprocate honorably based on past exchanges.`;
   }
 
-  // Friendly, concise greeting handling
+  // Greetings
   if (q.includes('hi') || q.includes('hello') || q.includes('namaste') || q.includes('hey') || q.includes('నమస్కారం') || q.includes('నమస్తే') || q.includes('नमस्ते')) {
     if (isTe) {
       return `నమస్కారం! నేను మీ హేమ (Hema). మీ గృహ బడ్జెట్, బంగారం రేట్లు, లేదా ₹2 వడ్డీ లెక్కల గురించి మీకు ఎలా సహాయపడగలను?`;
