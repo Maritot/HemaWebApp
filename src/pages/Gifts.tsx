@@ -17,10 +17,13 @@ import {
   Calendar,
   Search,
   Scale,
-  Pencil
+  Pencil,
+  Eye,
+  Image as ImageIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { capturePhoto } from '@/lib/camera';
 import { 
   addGift, 
   getGifts, 
@@ -81,6 +84,8 @@ const Gifts: React.FC = () => {
   const [occasion, setOccasion] = useState(OCCASIONS[0]);
   const [giftDate, setGiftDate] = useState(todayStr);
   const [notes, setNotes] = useState('');
+  const [giftPhoto, setGiftPhoto] = useState<string | null>(null);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
 
   useEffect(() => {
     loadAllData();
@@ -92,33 +97,77 @@ const Gifts: React.FC = () => {
     setGifts(giftsData.sort((a, b) => b.date - a.date));
   };
 
-  // Avatar photo upload helper (as data URI)
+  const resizeImageToDataUrl = (dataUrl: string, maxDim = 800, quality = 0.82): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width;
+        let h = img.height;
+        if (w > h && w > maxDim) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else if (h > maxDim) {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  };
+
+  const handlePickGiftPhoto = async (source: 'camera' | 'photos') => {
+    try {
+      const dataUrl = await capturePhoto(source);
+      if (dataUrl) {
+        const resized = await resizeImageToDataUrl(dataUrl, 800, 0.82);
+        setGiftPhoto(resized);
+      }
+    } catch (e) {
+      console.warn('Gift photo capture failed:', e);
+    }
+  };
+
+  const handlePickNewPersonAvatar = async (source: 'camera' | 'photos') => {
+    try {
+      const dataUrl = await capturePhoto(source);
+      if (dataUrl) {
+        const resized = await resizeImageToDataUrl(dataUrl, 250, 0.85);
+        setNewPersonAvatar(resized);
+      }
+    } catch (e) {
+      console.warn('Avatar capture failed:', e);
+    }
+  };
+
+  const handlePickEditPersonAvatar = async (source: 'camera' | 'photos') => {
+    try {
+      const dataUrl = await capturePhoto(source);
+      if (dataUrl) {
+        const resized = await resizeImageToDataUrl(dataUrl, 250, 0.85);
+        setEditPersonAvatar(resized);
+      }
+    } catch (e) {
+      console.warn('Edit avatar capture failed:', e);
+    }
+  };
+
+  // Avatar photo upload helper (as data URI fallback)
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Compress and resize avatar photo so it never exceeds browser storage limits
       const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxDim = 200;
-          let w = img.width;
-          let h = img.height;
-          if (w > h && w > maxDim) {
-            h = Math.round((h * maxDim) / w);
-            w = maxDim;
-          } else if (h > maxDim) {
-            w = Math.round((w * maxDim) / h);
-            h = maxDim;
-          }
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, w, h);
-          setNewPersonAvatar(canvas.toDataURL('image/jpeg', 0.85));
-        };
-        img.src = event.target?.result as string;
+      reader.onload = async (event) => {
+        if (event.target?.result) {
+          const resized = await resizeImageToDataUrl(event.target.result as string, 250, 0.85);
+          setNewPersonAvatar(resized);
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -245,7 +294,8 @@ const Gifts: React.FC = () => {
       weightGrams: (giftCategory === 'GOLD' || giftCategory === 'SILVER') && weightGrams ? Number(weightGrams) : undefined,
       purity: giftCategory === 'GOLD' ? purity : (giftCategory === 'SILVER' ? '92.5 Sterling' : undefined),
       date: timestamp,
-      notes: notes.trim()
+      notes: notes.trim(),
+      photoUrl: giftPhoto || undefined
     };
 
     await addGift(gift);
@@ -255,6 +305,7 @@ const Gifts: React.FC = () => {
     setAmount('');
     setWeightGrams('');
     setNotes('');
+    setGiftPhoto(null);
     setGiftCategory('CASH');
     await loadAllData();
   };
@@ -552,6 +603,25 @@ const Gifts: React.FC = () => {
                               "{gift.notes}"
                             </p>
                           )}
+
+                          {gift.photoUrl && (
+                            <div className="mt-2 flex items-center space-x-2">
+                              <img 
+                                src={gift.photoUrl} 
+                                alt="Gift attachment" 
+                                onClick={() => setPreviewPhoto(gift.photoUrl!)}
+                                className="w-12 h-12 rounded-lg object-cover border border-borderLight cursor-pointer shadow-2xs hover:opacity-90" 
+                              />
+                              <button 
+                                type="button"
+                                onClick={() => setPreviewPhoto(gift.photoUrl!)}
+                                className="text-[11px] font-bold text-primary-600 flex items-center space-x-1 hover:underline"
+                              >
+                                <Eye size={12} />
+                                <span>View Photo</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         {/* Delete entry */}
@@ -585,22 +655,44 @@ const Gifts: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                {/* Photo Upload / Avatar preview */}
+                {/* Photo Upload / Avatar preview with dual camera/gallery */}
                 <div className="flex flex-col items-center">
-                  <label className="relative cursor-pointer group">
-                    <div className="w-20 h-20 rounded-full bg-primary-50 ring-2 ring-primary-300 overflow-hidden flex items-center justify-center text-primary-600 shadow-inner">
-                      {newPersonAvatar ? (
-                        <img src={newPersonAvatar} alt="Preview" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="flex flex-col items-center">
-                          <Camera size={22} />
-                          <span className="text-[9px] font-semibold mt-1">Add Photo</span>
-                        </div>
-                      )}
-                    </div>
-                    <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
-                  </label>
-                  <span className="text-[10px] text-textMuted mt-1">Tap to select photo (Optional)</span>
+                  <div className="w-20 h-20 rounded-full bg-primary-50 ring-2 ring-primary-300 overflow-hidden flex items-center justify-center text-primary-600 shadow-inner mb-2">
+                    {newPersonAvatar ? (
+                      <img src={newPersonAvatar} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="flex flex-col items-center text-primary-600">
+                        <Users size={28} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => handlePickNewPersonAvatar('camera')}
+                      className="px-2.5 py-1 bg-primary-50 text-primary-700 border border-primary-200 rounded-lg text-xs font-bold hover:bg-primary-100 flex items-center space-x-1"
+                    >
+                      <Camera size={12} />
+                      <span>Live Camera</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePickNewPersonAvatar('photos')}
+                      className="px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold hover:bg-slate-200 flex items-center space-x-1"
+                    >
+                      <ImageIcon size={12} />
+                      <span>Gallery</span>
+                    </button>
+                    {newPersonAvatar && (
+                      <button
+                        type="button"
+                        onClick={() => setNewPersonAvatar('')}
+                        className="text-[10px] text-red-600 font-bold hover:underline"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div>
@@ -685,22 +777,44 @@ const Gifts: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                {/* Photo Upload / Avatar preview */}
+                {/* Photo Upload / Avatar preview with dual camera/gallery */}
                 <div className="flex flex-col items-center">
-                  <label className="relative cursor-pointer group">
-                    <div className="w-20 h-20 rounded-full bg-primary-50 ring-2 ring-primary-300 overflow-hidden flex items-center justify-center text-primary-600 shadow-inner">
-                      {editPersonAvatar ? (
-                        <img src={editPersonAvatar} alt="Preview" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="flex flex-col items-center">
-                          <Camera size={22} />
-                          <span className="text-[9px] font-semibold mt-1">Change Photo</span>
-                        </div>
-                      )}
-                    </div>
-                    <input type="file" accept="image/*" onChange={handleEditPhotoUpload} className="hidden" />
-                  </label>
-                  <span className="text-[10px] text-textMuted mt-1">Tap to change photo (Optional)</span>
+                  <div className="w-20 h-20 rounded-full bg-primary-50 ring-2 ring-primary-300 overflow-hidden flex items-center justify-center text-primary-600 shadow-inner mb-2">
+                    {editPersonAvatar ? (
+                      <img src={editPersonAvatar} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="flex flex-col items-center text-primary-600">
+                        <Users size={28} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => handlePickEditPersonAvatar('camera')}
+                      className="px-2.5 py-1 bg-primary-50 text-primary-700 border border-primary-200 rounded-lg text-xs font-bold hover:bg-primary-100 flex items-center space-x-1"
+                    >
+                      <Camera size={12} />
+                      <span>Live Camera</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePickEditPersonAvatar('photos')}
+                      className="px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold hover:bg-slate-200 flex items-center space-x-1"
+                    >
+                      <ImageIcon size={12} />
+                      <span>Gallery</span>
+                    </button>
+                    {editPersonAvatar && (
+                      <button
+                        type="button"
+                        onClick={() => setEditPersonAvatar('')}
+                        className="text-[10px] text-red-600 font-bold hover:underline"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div>
@@ -960,6 +1074,57 @@ const Gifts: React.FC = () => {
                   />
                 </div>
 
+                {/* Gift Photo / Hallmark / Receipt (User Requirement 1) */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-textMain flex items-center">
+                      <Camera size={14} className="mr-1.5 text-primary-600" />
+                      Gift Photo / Hallmark / Receipt (Optional)
+                    </span>
+                    {giftPhoto && (
+                      <button 
+                        type="button" 
+                        onClick={() => setGiftPhoto(null)}
+                        className="text-[10px] text-red-600 font-bold hover:underline"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+
+                  {giftPhoto ? (
+                    <div className="relative rounded-xl overflow-hidden border border-borderLight shadow-2xs">
+                      <img src={giftPhoto} alt="Gift preview" className="w-full h-36 object-cover" />
+                      <button 
+                        type="button"
+                        onClick={() => setGiftPhoto(null)}
+                        className="absolute top-2 right-2 p-1 bg-black/60 text-white rounded-full hover:bg-black/80"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handlePickGiftPhoto('camera')}
+                        className="p-2.5 bg-surface border border-primary-200 hover:border-primary-400 rounded-xl flex items-center justify-center space-x-1.5 text-xs font-bold text-primary-700 shadow-2xs active:scale-95 transition-all"
+                      >
+                        <Camera size={14} />
+                        <span>Live Camera</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePickGiftPhoto('photos')}
+                        className="p-2.5 bg-surface border border-borderLight hover:border-primary-300 rounded-xl flex items-center justify-center space-x-1.5 text-xs font-bold text-slate-700 shadow-2xs active:scale-95 transition-all"
+                      >
+                        <ImageIcon size={14} />
+                        <span>Photo Gallery</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <button 
                   onClick={handleSaveGift}
                   className="w-full mt-2 py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl shadow-soft transition-colors text-sm"
@@ -1009,6 +1174,25 @@ const Gifts: React.FC = () => {
         }}
         onCancel={() => setDeleteTargetGift(null)}
       />
+
+      {/* Preview Gift Photo Modal */}
+      {previewPhoto && createPortal(
+        <div 
+          onClick={() => setPreviewPhoto(null)} 
+          className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+        >
+          <div className="relative max-w-lg w-full bg-slate-900 rounded-2xl overflow-hidden shadow-2xl p-2">
+            <button 
+              onClick={() => setPreviewPhoto(null)} 
+              className="absolute top-3 right-3 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-full z-10"
+            >
+              <X size={18} />
+            </button>
+            <img src={previewPhoto} alt="Gift full preview" className="w-full max-h-[80vh] object-contain rounded-xl" />
+          </div>
+        </div>,
+        document.body
+      )}
 
     </div>
   );

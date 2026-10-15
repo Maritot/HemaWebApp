@@ -42,6 +42,7 @@ import {
 } from '@/lib/db';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { format } from 'date-fns';
+import { capturePhoto } from '@/lib/camera';
 
 const PAYMENT_MODES = ['UPI (GPay / PhonePe / Paytm)', 'Cash (Hand-to-Hand)', 'Bank NEFT / IMPS', 'Cheque', 'Other'];
 
@@ -197,52 +198,105 @@ const Debts: React.FC = () => {
     );
   };
 
+  const processProofImageData = (dataUrl: string) => {
+    const now = Date.now();
+    setVerifiedTimestamp(now);
+
+    const img = new Image();
+    img.onload = () => {
+      // Off-screen canvas to watermark timestamp onto image directly
+      const canvas = document.createElement('canvas');
+      const maxDim = 800;
+      let w = img.width;
+      let h = img.height;
+      if (w > h && w > maxDim) {
+        h = Math.round((h * maxDim) / w);
+        w = maxDim;
+      } else if (h > maxDim) {
+        w = Math.round((w * maxDim) / h);
+        h = maxDim;
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // Watermark overlay banner at bottom
+        const bannerHeight = 36;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        ctx.fillRect(0, h - bannerHeight, w, bannerHeight);
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 13px Inter, sans-serif';
+        const stampText = `HEMA VERIFIED PROOF • ${format(now, 'dd MMM yyyy, hh:mm:ss a')}`;
+        ctx.fillText(stampText, 12, h - 14);
+
+        setProofPhoto(canvas.toDataURL('image/jpeg', 0.82));
+      }
+    };
+    img.src = dataUrl;
+  };
+
+  const handlePickProofPhoto = async (source: 'camera' | 'photos') => {
+    captureGeoLocation();
+    try {
+      const dataUrl = await capturePhoto(source);
+      if (dataUrl) {
+        processProofImageData(dataUrl);
+      }
+    } catch (e) {
+      console.warn('Native proof capture failed, fallback to file input:', e);
+    }
+  };
+
   const handleProofPhotoCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Trigger automatic geolocation capture concurrently with photo
       captureGeoLocation();
-      const now = Date.now();
-      setVerifiedTimestamp(now);
-
       const reader = new FileReader();
       reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          // Off-screen canvas to watermark timestamp onto image directly
-          const canvas = document.createElement('canvas');
-          const maxDim = 800;
-          let w = img.width;
-          let h = img.height;
-          if (w > h && w > maxDim) {
-            h = Math.round((h * maxDim) / w);
-            w = maxDim;
-          } else if (h > maxDim) {
-            w = Math.round((w * maxDim) / h);
-            h = maxDim;
-          }
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, w, h);
-
-            // Watermark overlay banner at bottom
-            const bannerHeight = 36;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-            ctx.fillRect(0, h - bannerHeight, w, bannerHeight);
-
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 13px Inter, sans-serif';
-            const stampText = `HEMA VERIFIED PROOF • ${format(now, 'dd MMM yyyy, hh:mm:ss a')}`;
-            ctx.fillText(stampText, 12, h - 14);
-
-            setProofPhoto(canvas.toDataURL('image/jpeg', 0.82));
-          }
-        };
-        img.src = event.target?.result as string;
+        if (event.target?.result) {
+          processProofImageData(event.target.result as string);
+        }
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const processAvatarImageData = (dataUrl: string) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxDim = 300;
+      let w = img.width;
+      let h = img.height;
+      if (w > h && w > maxDim) {
+        h = Math.round((h * maxDim) / w);
+        w = maxDim;
+      } else if (h > maxDim) {
+        w = Math.round((w * maxDim) / h);
+        h = maxDim;
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, w, h);
+        setAvatarPhoto(canvas.toDataURL('image/jpeg', 0.8));
+      }
+    };
+    img.src = dataUrl;
+  };
+
+  const handlePickAvatar = async (source: 'camera' | 'photos') => {
+    try {
+      const dataUrl = await capturePhoto(source);
+      if (dataUrl) {
+        processAvatarImageData(dataUrl);
+      }
+    } catch (e) {
+      console.warn('Native avatar capture failed:', e);
     }
   };
 
@@ -251,28 +305,9 @@ const Debts: React.FC = () => {
     if (file) {
       const reader = new FileReader();
       reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxDim = 300;
-          let w = img.width;
-          let h = img.height;
-          if (w > h && w > maxDim) {
-            h = Math.round((h * maxDim) / w);
-            w = maxDim;
-          } else if (h > maxDim) {
-            w = Math.round((w * maxDim) / h);
-            h = maxDim;
-          }
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, w, h);
-            setAvatarPhoto(canvas.toDataURL('image/jpeg', 0.8));
-          }
-        };
-        img.src = event.target?.result as string;
+        if (event.target?.result) {
+          processAvatarImageData(event.target.result as string);
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -501,35 +536,199 @@ const Debts: React.FC = () => {
             const { totalDue, paidSoFar, remaining } = getDebtBalance(debt);
             const payments = debt.payments || [];
 
+            // ================= DEDICATED SETTLED CARD (ISSUE 2 FIX) =================
+            if (debt.status === 'SETTLED') {
+              const principalVal = debt.principalAmount || (debt.amount - (debt.interestAmount || 0));
+              const interestVal = debt.interestAmount || 0;
+              const clearedTotal = debt.amount || (principalVal + interestVal);
+              const isWeOwe = debt.type === 'WE_OWE';
+              const lastPayment = payments.length > 0 ? payments[payments.length - 1] : null;
+              const settledDate = lastPayment ? lastPayment.date : (debt.dueDate || debt.dateCreated);
+
+              return (
+                <div 
+                  key={debt.id} 
+                  className="flex flex-col p-4 rounded-2xl bg-gradient-to-b from-emerald-50/50 via-surface to-emerald-50/20 border border-emerald-200 shadow-sm space-y-3.5 transition-all"
+                >
+                  {/* Header Row */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      {debt.avatarUrl ? (
+                        <img 
+                          src={debt.avatarUrl} 
+                          alt={debt.person} 
+                          className="w-11 h-11 rounded-full object-cover border-2 border-emerald-200 shadow-xs shrink-0" 
+                        />
+                      ) : (
+                        <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-base shadow-xs shrink-0">
+                          {debt.person.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h3 className="font-extrabold text-textMain text-base tracking-tight">{debt.person}</h3>
+                          <span className={cn(
+                            "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
+                            isWeOwe ? "bg-amber-100 text-amber-900 border border-amber-200" : "bg-emerald-100 text-emerald-900 border border-emerald-200"
+                          )}>
+                            {isWeOwe ? 'Borrowing Repaid' : 'Loan Recovered'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-textMuted flex items-center space-x-1.5 mt-0.5">
+                          <span>Started: {format(new Date(debt.dateCreated), 'dd MMM yyyy')}</span>
+                          <span>•</span>
+                          <span className="text-emerald-700 font-semibold">Settled: {format(new Date(settledDate), 'dd MMM yyyy')}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-1">
+                      <button 
+                        onClick={() => handleDelete(debt)} 
+                        className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                        title="Delete Settled Record"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 3-Column Financial Reconciliation Ledger (Original Principal, Interest, Cleared Total) */}
+                  <div className="grid grid-cols-3 gap-2 bg-surface p-3 rounded-xl border border-emerald-200/90 shadow-2xs divide-x divide-borderLight">
+                    {/* Col 1: Original Principal */}
+                    <div className="flex flex-col items-center justify-center text-center px-1">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                        Original Principal
+                      </span>
+                      <span className="font-extrabold text-sm text-textMain mt-0.5">
+                        ₹{principalVal.toLocaleString('en-IN')}
+                      </span>
+                      <span className="text-[9px] text-textMuted mt-0.5">
+                        Initial {isWeOwe ? 'Borrowed' : 'Given'}
+                      </span>
+                    </div>
+
+                    {/* Col 2: Total Interest */}
+                    <div className="flex flex-col items-center justify-center text-center px-1">
+                      <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">
+                        Total Interest
+                      </span>
+                      <span className="font-extrabold text-sm text-amber-800 mt-0.5">
+                        +₹{interestVal.toLocaleString('en-IN')}
+                      </span>
+                      <span className="text-[9px] text-amber-700 font-medium mt-0.5">
+                        {debt.interestType === 'VADDI_MONTHLY' 
+                          ? `₹${debt.interestRate} Vaddi / mo` 
+                          : debt.interestType && debt.interestType !== 'NONE' 
+                            ? `${debt.interestRate}% interest` 
+                            : 'Zero Interest'}
+                      </span>
+                    </div>
+
+                    {/* Col 3: Total Cleared */}
+                    <div className="flex flex-col items-center justify-center text-center px-1">
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                        Total Cleared
+                      </span>
+                      <span className="font-extrabold text-sm text-emerald-700 mt-0.5">
+                        ₹{clearedTotal.toLocaleString('en-IN')}
+                      </span>
+                      <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.2 rounded-full mt-0.5">
+                        100% Repaid
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Verified Settlement Receipts (if payments exist) */}
+                  {payments.length > 0 && (
+                    <div className="bg-slate-50/80 border border-borderLight rounded-xl p-2.5 space-y-1.5">
+                      <p className="text-[10px] font-bold text-textMuted uppercase tracking-wider flex items-center">
+                        <History size={12} className="mr-1 text-emerald-700" />
+                        Settlement Receipts & Proofs ({payments.length}):
+                      </p>
+                      <div className="space-y-1">
+                        {payments.map(p => (
+                          <div key={p.id} className="bg-surface border border-borderLight/80 rounded-lg p-2 flex items-center justify-between text-xs">
+                            <div>
+                              <div className="flex items-center space-x-1.5">
+                                <span className="font-bold text-emerald-700">₹{p.amount.toLocaleString('en-IN')}</span>
+                                <span className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded font-medium">
+                                  {p.mode || 'Cash'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-textMuted mt-0.5">
+                                {format(new Date(p.date), 'dd MMM yyyy')} {p.notes ? `• ${p.notes}` : ''}
+                              </p>
+                              {(p.location || p.timestampVerified) && (
+                                <div className="flex items-center space-x-2 text-[9px] text-textMuted pt-0.5">
+                                  {p.location && (
+                                    <span className="flex items-center text-emerald-700">
+                                      <MapPin size={9} className="mr-0.5" />
+                                      {p.location.latitude.toFixed(3)}°, {p.location.longitude.toFixed(3)}°
+                                    </span>
+                                  )}
+                                  {p.timestampVerified && (
+                                    <span className="flex items-center">
+                                      <Clock size={9} className="mr-0.5" />
+                                      {format(new Date(p.timestampVerified), 'hh:mm a')}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center space-x-1.5">
+                              {p.proofPhoto && (
+                                <button 
+                                  onClick={() => setViewProofPayment(p)}
+                                  className="flex items-center space-x-1 px-2 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg text-[10px] font-bold hover:bg-emerald-100 transition-colors"
+                                >
+                                  <Eye size={11} />
+                                  <span>Proof</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {debt.notes && (
+                    <p className="text-[11px] text-textMuted italic bg-background/80 p-2 rounded-lg border border-borderLight/60">
+                      "{debt.notes}"
+                    </p>
+                  )}
+
+                  {/* Footer Row */}
+                  <div className="flex items-center justify-between border-t border-emerald-200/80 pt-2.5">
+                    <span className="text-xs font-bold text-emerald-900 flex items-center">
+                      <ShieldCheck size={14} className="mr-1 text-emerald-600" />
+                      <span>Closed Ledger • ₹0 Pending</span>
+                    </span>
+
+                    <button 
+                      onClick={() => handleReopenDebt(debt)}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95"
+                      title="Move back to Active loans to edit or adjust payments"
+                    >
+                      <RotateCcw size={12} className="text-amber-700" />
+                      <span>Reopen to Active</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            // ================= ACTIVE DEBT CARD =================
             return (
               <div 
                 key={debt.id} 
-                className={cn(
-                  "flex flex-col p-4 rounded-2xl border transition-all space-y-3",
-                  debt.status === 'SETTLED' 
-                    ? "bg-gradient-to-br from-green-50/40 via-white to-green-50/20 border-green-200 shadow-sm" 
-                    : "bg-surface border-borderLight shadow-sm"
-                )}
+                className="flex flex-col p-4 rounded-2xl border transition-all space-y-3 bg-surface border-borderLight shadow-sm"
               >
-                {/* Settled Summary Banner at Top of Card (User Feedback 4) */}
-                {debt.status === 'SETTLED' && (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-center justify-between text-xs text-emerald-950">
-                    <div className="flex items-center space-x-2">
-                      <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
-                      <div>
-                        <p className="font-extrabold text-xs text-emerald-900 tracking-tight">✓ FULLY SETTLED & CLOSED</p>
-                        <p className="text-[10px] text-emerald-700">Cleared Total: ₹{totalDue.toLocaleString('en-IN')}</p>
-                      </div>
-                    </div>
-                    <span className="text-[10px] uppercase font-bold text-emerald-800 bg-emerald-100/90 px-2 py-0.5 rounded-full border border-emerald-200 shrink-0">
-                      ₹0 Pending
-                    </span>
-                  </div>
-                )}
-
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-3">
-                    {/* Person Avatar Photo or Silhouette Icon (User Feedback 6) */}
+                    {/* Person Avatar Photo or Silhouette Icon */}
                     {debt.avatarUrl ? (
                       <img 
                         src={debt.avatarUrl} 
@@ -537,10 +736,7 @@ const Debts: React.FC = () => {
                         className="w-10 h-10 rounded-full object-cover shrink-0 mt-0.5 border border-borderLight shadow-xs" 
                       />
                     ) : (
-                      <div className={cn(
-                        "w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-0.5",
-                        debt.status === 'SETTLED' ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"
-                      )}>
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-0.5 bg-slate-100 text-slate-600">
                         <Users size={18} />
                       </div>
                     )}
@@ -548,15 +744,13 @@ const Debts: React.FC = () => {
                     <div>
                       <div className="flex items-center space-x-2">
                         <p className="font-bold text-textMain text-sm">{debt.person}</p>
-                        {debt.status !== 'SETTLED' && (
-                          <button 
-                            onClick={() => handleOpenEdit(debt)} 
-                            className="text-textMuted hover:text-primary-600 p-1"
-                            title="Edit Loan Details"
-                          >
-                            <Edit2 size={13} />
-                          </button>
-                        )}
+                        <button 
+                          onClick={() => handleOpenEdit(debt)} 
+                          className="text-textMuted hover:text-primary-600 p-1"
+                          title="Edit Loan Details"
+                        >
+                          <Edit2 size={13} />
+                        </button>
                         <button 
                           onClick={() => handleDelete(debt)} 
                           className="text-textMuted hover:text-red-500 p-1"
@@ -566,47 +760,32 @@ const Debts: React.FC = () => {
                         </button>
                       </div>
 
-                      {debt.status !== 'SETTLED' ? (
-                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                          <span className={cn(
-                            "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
-                            debt.type === 'WE_OWE' ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
-                          )}>
-                            {debt.type === 'WE_OWE' ? t('debts.to_pay') : t('debts.to_collect')}
-                          </span>
-                          <span className="text-xs text-textMuted">
-                            Due: {format(new Date(debt.dueDate), 'dd MMM yyyy')}
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center space-x-2 text-[11px] text-textMuted mt-1">
-                          <span>Started: {format(new Date(debt.dateCreated), 'dd MMM yyyy')}</span>
-                        </div>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
+                          debt.type === 'WE_OWE' ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
+                        )}>
+                          {debt.type === 'WE_OWE' ? t('debts.to_pay') : t('debts.to_collect')}
+                        </span>
+                        <span className="text-xs text-textMuted">
+                          Due: {format(new Date(debt.dueDate), 'dd MMM yyyy')}
+                        </span>
+                      </div>
                     </div>
                   </div>
                   
-                  {/* Amount Breakdown (Settled cleared state vs Active remaining) */}
-                  {debt.status !== 'SETTLED' ? (
-                    <div className="flex flex-col items-end text-right">
-                      <span className="font-bold text-lg text-textMain">₹{remaining.toLocaleString('en-IN')}</span>
-                      <span className="text-[11px] text-textMuted">
-                        Total: ₹{totalDue.toLocaleString('en-IN')} {paidSoFar > 0 && `(Paid: ₹${paidSoFar.toLocaleString('en-IN')})`}
+                  {/* Amount Breakdown (Active remaining) */}
+                  <div className="flex flex-col items-end text-right">
+                    <span className="font-bold text-lg text-textMain">₹{remaining.toLocaleString('en-IN')}</span>
+                    <span className="text-[11px] text-textMuted">
+                      Total: ₹{totalDue.toLocaleString('en-IN')} {paidSoFar > 0 && `(Paid: ₹${paidSoFar.toLocaleString('en-IN')})`}
+                    </span>
+                    {debt.status === 'OVERDUE' && (
+                      <span className="flex items-center text-[10px] text-red-500 font-bold mt-1">
+                        <AlertCircle size={10} className="mr-1" /> {t('debts.overdue')}
                       </span>
-                      {debt.status === 'OVERDUE' && (
-                        <span className="flex items-center text-[10px] text-red-500 font-bold mt-1">
-                          <AlertCircle size={10} className="mr-1" /> {t('debts.overdue')}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-end text-right">
-                      <span className="font-extrabold text-base text-emerald-700">₹{totalDue.toLocaleString('en-IN')}</span>
-                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 mt-0.5">
-                        Cleared
-                      </span>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
 
                 {/* Interest Badge info */}
@@ -677,7 +856,7 @@ const Debts: React.FC = () => {
                               <span className="text-[10px] text-textMuted italic">No Photo</span>
                             )}
 
-                            {/* Delete partial payment button (Feedback 5) */}
+                            {/* Delete partial payment button */}
                             <button
                               type="button"
                               onClick={() => setDeleteTargetPayment({ debtId: debt.id, payment: p })}
@@ -699,60 +878,43 @@ const Debts: React.FC = () => {
                   </p>
                 )}
 
-                {/* Actions: Partial Payment, WhatsApp Remind, Settle with Proof for Active; Reopen for Settled */}
-                {debt.status !== 'SETTLED' ? (
-                  <div className="flex items-center justify-end space-x-2 border-t border-borderLight pt-2.5">
-                    <button 
-                      onClick={() => {
-                        setRepaymentDebt(debt);
-                        setPayAmount('');
-                        setPayNotes('');
-                        setProofPhoto(null);
-                        setCoords(null);
-                        setVerifiedTimestamp(null);
-                      }}
-                      className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg px-3 py-2 flex items-center justify-center hover:bg-emerald-100 transition-colors"
-                      title="Record partial payment with proof"
-                    >
-                      <Camera size={14} className="mr-1" />
-                      <span className="text-xs font-bold">Record Payment</span>
-                    </button>
+                {/* Actions: Partial Payment, WhatsApp Remind, Settle with Proof */}
+                <div className="flex items-center justify-end space-x-2 border-t border-borderLight pt-2.5">
+                  <button 
+                    onClick={() => {
+                      setRepaymentDebt(debt);
+                      setPayAmount('');
+                      setPayNotes('');
+                      setProofPhoto(null);
+                      setCoords(null);
+                      setVerifiedTimestamp(null);
+                    }}
+                    className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg px-3 py-2 flex items-center justify-center hover:bg-emerald-100 transition-colors"
+                    title="Record partial payment with proof"
+                  >
+                    <Camera size={14} className="mr-1" />
+                    <span className="text-xs font-bold">Record Payment</span>
+                  </button>
 
-                    <a 
-                      href={`https://wa.me/?text=Hi ${debt.person}, reminder regarding balance ₹${remaining.toLocaleString('en-IN')} of total ₹${totalDue.toLocaleString('en-IN')} (Due: ${format(new Date(debt.dueDate), 'dd MMM yyyy')}).`} 
-                      target="_blank" 
-                      rel="noreferrer" 
-                      className="flex-1 bg-[#25D366]/10 border border-[#25D366]/30 rounded-lg py-2 flex items-center justify-center hover:bg-[#25D366]/20 transition-colors"
-                    >
-                      <Phone size={14} className="text-[#128C7E] mr-1" />
-                      <span className="text-xs font-bold text-[#128C7E]">{t('debts.send_reminder', 'Remind')}</span>
-                    </a>
+                  <a 
+                    href={`https://wa.me/?text=Hi ${debt.person}, reminder regarding balance ₹${remaining.toLocaleString('en-IN')} of total ₹${totalDue.toLocaleString('en-IN')} (Due: ${format(new Date(debt.dueDate), 'dd MMM yyyy')}).`} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="flex-1 bg-[#25D366]/10 border border-[#25D366]/30 rounded-lg py-2 flex items-center justify-center hover:bg-[#25D366]/20 transition-colors"
+                  >
+                    <Phone size={14} className="text-[#128C7E] mr-1" />
+                    <span className="text-xs font-bold text-[#128C7E]">{t('debts.send_reminder', 'Remind')}</span>
+                  </a>
 
-                    <button 
-                      onClick={() => handleOpenSettleWithProof(debt)}
-                      className="bg-primary-600 hover:bg-primary-700 text-white rounded-lg px-3 py-2 flex items-center justify-center transition-all shadow-soft active:scale-95"
-                      title="Mark as completely settled with proof verification"
-                    >
-                      <CheckCircle2 size={14} className="mr-1 text-white" />
-                      <span className="text-xs font-bold">Settle with Proof</span>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between border-t border-emerald-200/60 pt-2.5 bg-emerald-50/40 -mx-4 -mb-4 p-3 rounded-b-2xl">
-                    <span className="text-xs font-bold text-emerald-900 flex items-center">
-                      <ShieldCheck size={14} className="mr-1.5 text-emerald-600" />
-                      Verified Settled ({payments.length} payment records)
-                    </span>
-                    <button 
-                      onClick={() => handleReopenDebt(debt)}
-                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95"
-                      title="Move back to Active loans to edit or adjust payments"
-                    >
-                      <RotateCcw size={12} className="text-amber-700" />
-                      <span>Reopen to Active</span>
-                    </button>
-                  </div>
-                )}
+                  <button 
+                    onClick={() => handleOpenSettleWithProof(debt)}
+                    className="bg-primary-600 hover:bg-primary-700 text-white rounded-lg px-3 py-2 flex items-center justify-center transition-all shadow-soft active:scale-95"
+                    title="Mark as completely settled with proof verification"
+                  >
+                    <CheckCircle2 size={14} className="mr-1 text-white" />
+                    <span className="text-xs font-bold">Settle with Proof</span>
+                  </button>
+                </div>
               </div>
             );
           })
@@ -808,23 +970,36 @@ const Debts: React.FC = () => {
                         <Users size={22} />
                       </div>
                     )}
-                    <label className="absolute -bottom-1 -right-1 p-1.5 bg-primary-600 text-white rounded-full cursor-pointer shadow-md hover:bg-primary-700 active:scale-95 transition-all">
-                      <Camera size={12} />
-                      <input type="file" accept="image/*" onChange={handleAvatarCapture} className="hidden" />
-                    </label>
                   </div>
-                  <div className="text-xs min-w-0">
+                  <div className="text-xs min-w-0 flex-1">
                     <p className="font-bold text-textMain">Person Photo (Optional)</p>
-                    <p className="text-[10px] text-textMuted">Tap camera to upload or take a photo</p>
-                    {avatarPhoto && (
-                      <button 
-                        type="button" 
-                        onClick={() => setAvatarPhoto(null)} 
-                        className="text-[10px] text-red-600 font-bold hover:underline mt-0.5"
+                    <div className="flex items-center space-x-1.5 mt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handlePickAvatar('camera')}
+                        className="px-2.5 py-1 bg-primary-50 text-primary-700 border border-primary-200 rounded-lg text-[11px] font-bold hover:bg-primary-100 flex items-center space-x-1"
                       >
-                        Remove photo
+                        <Camera size={12} />
+                        <span>Live Camera</span>
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        onClick={() => handlePickAvatar('photos')}
+                        className="px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[11px] font-bold hover:bg-slate-200 flex items-center space-x-1"
+                      >
+                        <ImageIcon size={12} />
+                        <span>Gallery</span>
+                      </button>
+                      {avatarPhoto && (
+                        <button 
+                          type="button" 
+                          onClick={() => setAvatarPhoto(null)} 
+                          className="text-[10px] text-red-600 font-bold hover:underline ml-1"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -1108,18 +1283,31 @@ const Debts: React.FC = () => {
                       </button>
                     </div>
                   ) : (
-                    <label className="border-2 border-dashed border-borderLight hover:border-primary-400 bg-surface rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-colors">
-                      <Camera size={24} className="text-primary-600 mb-1" />
-                      <span className="text-xs font-bold text-textMain">Take Photo / Upload Receipt</span>
-                      <span className="text-[10px] text-textMuted mt-0.5">Captures UPI Screenshot or Cash Handover</span>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" // triggers camera on mobile devices
-                        onChange={handleProofPhotoCapture} 
-                        className="hidden" 
-                      />
-                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handlePickProofPhoto('camera')}
+                        className="p-3 bg-surface border border-primary-200 hover:border-primary-500 rounded-xl flex flex-col items-center justify-center transition-all group shadow-2xs active:scale-95"
+                      >
+                        <div className="w-9 h-9 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center mb-1">
+                          <Camera size={18} />
+                        </div>
+                        <span className="text-xs font-bold text-textMain">Live Camera</span>
+                        <span className="text-[10px] text-textMuted">Capture receipt now</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handlePickProofPhoto('photos')}
+                        className="p-3 bg-surface border border-borderLight hover:border-primary-400 rounded-xl flex flex-col items-center justify-center transition-all group shadow-2xs active:scale-95"
+                      >
+                        <div className="w-9 h-9 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center mb-1">
+                          <ImageIcon size={18} />
+                        </div>
+                        <span className="text-xs font-bold text-textMain">Photo Gallery</span>
+                        <span className="text-[10px] text-textMuted">Select image file</span>
+                      </button>
+                    </div>
                   )}
 
                   {/* Geolocation & Timestamp Info */}

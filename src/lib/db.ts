@@ -25,6 +25,7 @@ export interface GiftTransaction {
   purity?: string; // "22K", "24K", "18K", "92.5 Sterling"
   date: number;
   notes?: string;
+  photoUrl?: string; // Photo of gift, jewelry hallmark, or envelope receipt
 }
 
 export interface HemaDB extends DBSchema {

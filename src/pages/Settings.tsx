@@ -36,6 +36,12 @@ import {
   disablePin, 
   verifyPin 
 } from '@/lib/security';
+import { exportAndSaveFile } from '@/lib/nativeFiles';
+import { 
+  requestNotificationPermission as requestNativeNotifPermission, 
+  triggerSystemNotification, 
+  checkNotificationPermission 
+} from '@/lib/notifications';
 
 const Settings: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -58,7 +64,7 @@ const Settings: React.FC = () => {
   const [securityMessage, setSecurityMessage] = useState<string | null>(null);
 
   // Notifications State & Interactive in-app alert
-  const [notifPermission, setNotifPermission] = useState<NotificationPermission>('default');
+  const [deviceAlertsActive, setDeviceAlertsActive] = useState(false);
   const [overdueDebts, setOverdueDebts] = useState<DebtRecordItem[]>([]);
   const [inAppAlert, setInAppAlert] = useState<string | null>(null);
 
@@ -66,9 +72,9 @@ const Settings: React.FC = () => {
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      setNotifPermission(Notification.permission);
-    }
+    checkNotificationPermission().then(granted => {
+      setDeviceAlertsActive(granted);
+    });
     loadDebtAlerts();
   }, []);
 
@@ -81,68 +87,7 @@ const Settings: React.FC = () => {
     setOverdueDebts(urgent);
   };
 
-  // Universal helper for Android WebView & Web file export / sharing
-  const shareOrDownloadFile = async (content: string, filename: string, mimeType: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    
-    // 1. Try Native Android Share Sheet (Capacitor / Mobile Web)
-    if (typeof navigator !== 'undefined' && navigator.canShare) {
-      try {
-        const file = new File([blob], filename, { type: mimeType });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            files: [file],
-            title: filename,
-            text: 'Hema Finance Data Export'
-          });
-          return true;
-        }
-      } catch (err: any) {
-        if (err.name !== 'AbortError') console.warn('File share failed, falling back', err);
-      }
-    }
-
-    // 2. Try Web Share API with text
-    if (typeof navigator !== 'undefined' && navigator.share) {
-      try {
-        await navigator.share({
-          title: filename,
-          text: content.length < 50000 ? content : content.slice(0, 50000)
-        });
-        return true;
-      } catch (err: any) {
-        if (err.name !== 'AbortError') console.warn('Text share failed, falling back', err);
-      }
-    }
-
-    // 3. Standard browser anchor download
-    try {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      }, 1000);
-      return true;
-    } catch (err) {
-      console.warn('Anchor download failed, copying to clipboard', err);
-    }
-
-    // 4. Clipboard fallback
-    try {
-      await navigator.clipboard.writeText(content);
-      alert('Content copied to clipboard! You can paste it into any document or messaging app.');
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // CSV Export
+  // CSV Export using Native Filesystem & Share Sheet
   const handleExportCSV = async () => {
     try {
       const txs = await getTransactions();
@@ -170,21 +115,31 @@ const Settings: React.FC = () => {
       });
 
       const filename = `hema_finance_export_${new Date().toISOString().slice(0, 10)}.csv`;
-      await shareOrDownloadFile(csv, filename, 'text/csv');
-      setBackupStatus('CSV Export ready! Shared or saved.');
+      const res = await exportAndSaveFile({
+        filename,
+        content: csv,
+        mimeType: 'text/csv',
+        title: 'Hema Finance CSV Ledger'
+      });
+      setBackupStatus(res.message);
     } catch (err: any) {
       setBackupStatus(`CSV Export failed: ${err.message}`);
     }
   };
 
-  // Full JSON Backup Export
+  // Full JSON Backup Export using Native Filesystem & Share Sheet
   const handleExportJSON = async () => {
     try {
       const backup = await exportFullBackup();
       const jsonStr = JSON.stringify(backup, null, 2);
       const filename = `hema_full_backup_${new Date().toISOString().slice(0, 10)}.json`;
-      await shareOrDownloadFile(jsonStr, filename, 'application/json');
-      setBackupStatus('Backup exported successfully! File shared or saved.');
+      const res = await exportAndSaveFile({
+        filename,
+        content: jsonStr,
+        mimeType: 'application/json',
+        title: 'Hema Full Backup JSON'
+      });
+      setBackupStatus(res.message);
     } catch (e: any) {
       setBackupStatus(`Backup export failed: ${e.message}`);
     }
@@ -195,80 +150,158 @@ const Settings: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const parsed: HemaBackupPayload = JSON.parse(event.target?.result as string);
-        await restoreFullBackup(parsed);
-        setBackupStatus('Backup restored successfully! Refreshing...');
-        setTimeout(() => window.location.reload(), 1200);
-      } catch (err: any) {
-        setBackupStatus(`Failed to restore backup: ${err.message}`);
+    try {
+      setBackupStatus('Reading backup file...');
+      let content = '';
+      if (typeof file.text === 'function') {
+        content = await file.text();
+      } else {
+        content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onerror = (err) => reject(err);
+          reader.readAsText(file);
+        });
       }
-    };
-    reader.readAsText(file);
+
+      const parsed: HemaBackupPayload = JSON.parse(content);
+      if (!parsed || (!parsed.transactions && !parsed.debts && !parsed.gifts)) {
+        throw new Error('Invalid Hema backup format: missing transactions, debts, or gifts.');
+      }
+      await restoreFullBackup(parsed);
+      setBackupStatus('✅ Backup restored successfully! Refreshing data in 1 second...');
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err: any) {
+      setBackupStatus(`❌ Failed to restore backup: ${err.message || 'Invalid JSON file'}`);
+    }
   };
 
-  // Security Handlers
-  const handleSavePin = () => {
-    if (pinInput.length !== 4) {
-      setSecurityMessage('PIN must be exactly 4 digits');
+  // 1-Tap Load Sample Backup for Testing
+  const handleLoadSampleBackup = async () => {
+    if (!window.confirm('Load sample test ledger (contains sample transactions, active & settled debts, and gifts)?')) {
       return;
     }
-    if (pinInput !== confirmPinInput) {
-      setSecurityMessage('PINs do not match');
-      return;
+    try {
+      setBackupStatus('Loading sample ledger...');
+      const samplePayload: HemaBackupPayload = {
+        version: 4,
+        exportedAt: new Date().toISOString(),
+        transactions: [
+          { id: 'tx_sample_01', amount: 75000, categoryId: 'Salary', label: 'Monthly Household Salary', type: 'INCOME', date: Date.now() - 5 * 86400000, notes: 'Primary bank deposit' },
+          { id: 'tx_sample_02', amount: 4500, categoryId: 'Groceries', label: 'Provisions & D-Mart', type: 'EXPENSE', date: Date.now() - 3 * 86400000, notes: 'Monthly household provisions' },
+          { id: 'tx_sample_03', amount: 2200, categoryId: 'Bills', label: 'Electricity Bill', type: 'EXPENSE', date: Date.now() - 2 * 86400000, notes: 'Paid online via UPI' },
+          { id: 'tx_sample_04', amount: 1800, categoryId: 'Transport', label: 'Petrol Refill', type: 'EXPENSE', date: Date.now() - 1 * 86400000, notes: 'Two-wheeler fuel' }
+        ],
+        people: [
+          { id: 'person_sample_01', name: 'Ramesh Uncle', relationship: 'Uncle', phone: '+91 98765 43210', notes: 'Tirupati Family Elder', createdAt: Date.now() - 30 * 86400000 },
+          { id: 'person_sample_02', name: 'Suresh Cousin', relationship: 'Cousin', phone: '+91 98480 12345', notes: 'Family cousin', createdAt: Date.now() - 20 * 86400000 }
+        ],
+        debts: [
+          {
+            id: 'debt_sample_01',
+            person: 'Ramesh Uncle',
+            principalAmount: 100000,
+            amount: 160000,
+            type: 'OWED_TO_US',
+            status: 'SETTLED',
+            interestType: 'VADDI_MONTHLY',
+            interestRate: 5,
+            tenureMonths: 12,
+            interestAmount: 60000,
+            dueDate: Date.now() - 10 * 86400000,
+            dateCreated: Date.now() - 365 * 86400000,
+            notes: 'Hand loan for agricultural harvest',
+            payments: [
+              {
+                id: 'pay_sample_01',
+                amount: 160000,
+                date: Date.now() - 10 * 86400000,
+                mode: 'Bank NEFT / IMPS',
+                notes: 'Full final settlement',
+                timestampVerified: Date.now() - 10 * 86400000
+              }
+            ]
+          },
+          {
+            id: 'debt_sample_02',
+            person: 'Suresh Cousin',
+            principalAmount: 25000,
+            amount: 25000,
+            type: 'OWED_TO_US',
+            status: 'PENDING',
+            interestType: 'NONE',
+            dueDate: Date.now() + 3 * 86400000,
+            dateCreated: Date.now() - 15 * 86400000,
+            notes: 'Short term family emergency assistance',
+            payments: []
+          }
+        ],
+        gifts: [
+          {
+            id: 'gift_sample_01',
+            person: 'Ramesh Uncle',
+            personId: 'person_sample_01',
+            occasion: 'Wedding (विवाह / పెళ్లి)',
+            type: 'RECEIVED',
+            category: 'GOLD',
+            item: 'Gold Ring',
+            weightGrams: 8,
+            purity: '22K',
+            amount: 60000,
+            date: Date.now() - 60 * 86400000,
+            notes: 'Gifted at elder daughter wedding'
+          },
+          {
+            id: 'gift_sample_02',
+            person: 'Suresh Cousin',
+            personId: 'person_sample_02',
+            occasion: 'Housewarming (गृहप्रवेश / గృహప్రవేశం)',
+            type: 'GIVEN',
+            category: 'SILVER',
+            item: 'Silver Diya Pair',
+            weightGrams: 100,
+            purity: '92.5 Sterling',
+            amount: 9500,
+            date: Date.now() - 15 * 86400000,
+            notes: 'Given for new home entry'
+          }
+        ]
+      };
+      await restoreFullBackup(samplePayload);
+      setBackupStatus('✅ Sample test data loaded successfully! Refreshing...');
+      setTimeout(() => window.location.reload(), 1000);
+    } catch (err: any) {
+      setBackupStatus(`❌ Load sample failed: ${err.message}`);
     }
-    setPin(pinInput);
-    setPinEnabledState(true);
-    setSecurityMessage('Security PIN enabled successfully!');
-    setPinInput('');
-    setConfirmPinInput('');
-    setTimeout(() => {
-      setShowSecurityModal(false);
-      setSecurityMessage(null);
-    }, 1200);
   };
 
-  const handleDisablePin = () => {
-    if (disablePin(pinInput)) {
-      setPinEnabledState(false);
-      setSecurityMessage('Security PIN disabled');
-      setPinInput('');
-      setTimeout(() => {
-        setShowSecurityModal(false);
-        setSecurityMessage(null);
-      }, 1000);
+  // Native Notification Requests & Status Bar Trigger
+  const handleEnableAlerts = async () => {
+    const granted = await requestNativeNotifPermission();
+    setDeviceAlertsActive(granted);
+    if (granted) {
+      await triggerSystemNotification({
+        title: '🔔 Hema Financial Alerts Enabled',
+        body: 'You will receive status bar reminders for upcoming loan due dates and family gifts.'
+      });
+      setInAppAlert('🔔 Native alert sent to your Android status bar!');
     } else {
-      setSecurityMessage('Incorrect current PIN');
+      setInAppAlert('⚠️ Please grant notification permission in device Settings to receive alerts.');
     }
+    setTimeout(() => setInAppAlert(null), 4500);
   };
 
-  const handleLockNow = () => {
-    setShowSecurityModal(false);
-    window.dispatchEvent(new CustomEvent('hema:lock'));
-  };
-
-  // Notification Permission Request with haptic and in-app feedback
-  const requestNotificationPermission = async () => {
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate([80, 40, 80]);
+  const handleTestAlert = async () => {
+    await requestNativeNotifPermission();
+    const sent = await triggerSystemNotification({
+      title: '🔔 Hema Loan Due Alert',
+      body: 'Reminder: Ramesh Uncle loan repayment of ₹10,000 is due in 3 days!'
+    });
+    if (sent) {
+      setInAppAlert('🔔 System notification sent to your device status bar outside the app!');
+    } else {
+      setInAppAlert('🔔 In-App Alert: Ramesh Uncle repayment of ₹10,000 is due in 3 days!');
     }
-    if ('Notification' in window) {
-      try {
-        const res = await Notification.requestPermission();
-        setNotifPermission(res);
-        if (res === 'granted') {
-          new Notification('Hema Finance Alerts Active', {
-            body: 'You will receive timely reminders for due loans and upcoming family gifts.',
-            icon: '/hema-icon-192.png'
-          });
-        }
-      } catch (e) {
-        console.warn('Notification permission error', e);
-      }
-    }
-    setInAppAlert('🔔 Notification Alerts Active! Hema will monitor your loans and gifts.');
     setTimeout(() => setInAppAlert(null), 4500);
   };
 
@@ -485,13 +518,13 @@ const Settings: React.FC = () => {
                 <div className="p-3 bg-slate-50 rounded-xl border border-borderLight flex items-center justify-between text-xs">
                   <div>
                     <p className="font-semibold text-textMain">Device Alerts Status:</p>
-                    <p className="text-textMuted capitalize">Active & In-App Enabled</p>
+                    <p className="text-textMuted capitalize">{deviceAlertsActive ? 'Active & System Enabled' : 'Disabled (Tap to Enable)'}</p>
                   </div>
                   <button 
-                    onClick={requestNotificationPermission}
+                    onClick={handleEnableAlerts}
                     className="px-3 py-1.5 bg-primary-600 text-white font-bold rounded-lg hover:bg-primary-700 text-xs shadow-xs"
                   >
-                    Enable Alerts
+                    {deviceAlertsActive ? 'Alerts Active' : 'Enable Alerts'}
                   </button>
                 </div>
 
@@ -525,25 +558,11 @@ const Settings: React.FC = () => {
                 </div>
 
                 <button 
-                  onClick={() => {
-                    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-                      navigator.vibrate([100, 50, 100, 50, 200]);
-                    }
-                    setInAppAlert('🔔 Due Date Alert: Ramesh Uncle repayment of ₹10,000 is due in 3 days!');
-                    setTimeout(() => setInAppAlert(null), 4500);
-
-                    if (notifPermission === 'granted' && 'Notification' in window) {
-                      new Notification('Hema Reminder Test', {
-                        body: 'Reminders are functioning properly on your device.',
-                        icon: '/hema-icon-192.png'
-                      });
-                    } else {
-                      requestNotificationPermission();
-                    }
-                  }}
-                  className="w-full py-2.5 bg-primary-50 hover:bg-primary-100 text-primary-800 font-bold rounded-xl text-xs transition-colors border border-primary-200"
+                  onClick={handleTestAlert}
+                  className="w-full py-2.5 bg-primary-50 hover:bg-primary-100 text-primary-800 font-bold rounded-xl text-xs transition-colors border border-primary-200 flex items-center justify-center space-x-1.5"
                 >
-                  🔔 Test Device Reminder
+                  <Bell size={14} className="text-primary-700" />
+                  <span>Test Mobile Notification (Status Bar Alert)</span>
                 </button>
               </div>
             </CardContent>
@@ -555,7 +574,7 @@ const Settings: React.FC = () => {
       {/* ================= MODAL 3: BACKUP, RESTORE & SYNC ================= */}
       {showBackupModal && createPortal(
         <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-          <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95">
+          <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center space-x-2">
@@ -589,7 +608,7 @@ const Settings: React.FC = () => {
                   </div>
                   <div className="flex-1">
                     <p className="font-bold text-xs text-textMain">Create Full JSON Backup</p>
-                    <p className="text-[10px] text-textMuted">Downloads or shares complete ledger (Gifts, Debts, Transactions, People) as a single file.</p>
+                    <p className="text-[10px] text-textMuted">Saves to Downloads or opens Android Share Sheet (Drive, WhatsApp, Files).</p>
                   </div>
                 </button>
 
@@ -604,6 +623,21 @@ const Settings: React.FC = () => {
                   </div>
                   <input type="file" accept=".json,application/json" onChange={handleImportJSON} className="hidden" />
                 </label>
+
+                {/* 1-Tap Sample Test Backup Button */}
+                <button
+                  type="button"
+                  onClick={handleLoadSampleBackup}
+                  className="w-full p-3.5 bg-amber-50/60 border border-amber-200 hover:border-amber-400 rounded-xl flex items-center space-x-3 text-left transition-colors group"
+                >
+                  <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                    <RefreshCw size={18} />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-bold text-xs text-amber-950">Load Sample Test Backup (1-Tap)</p>
+                    <p className="text-[10px] text-amber-800">Populate realistic test data (Loans, Gifts, Transactions) to test restore.</p>
+                  </div>
+                </button>
 
                 {/* Cloud & Drive Info */}
                 <div className="p-3 bg-slate-50 border border-borderLight rounded-xl text-[11px] text-textMuted space-y-1">
