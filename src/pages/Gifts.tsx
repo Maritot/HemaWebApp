@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Card, CardContent } from '@/components/ui/Card';
 import { 
   Gift as GiftIcon, 
@@ -32,6 +33,7 @@ import {
   PersonRecord, 
   GiftCategory 
 } from '@/lib/db';
+import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { format } from 'date-fns';
 
 const RELATION_TAGS = ['Uncle', 'Aunt', 'In-laws', 'Cousin', 'Friend', 'Neighbour', 'Colleague', 'Family'];
@@ -39,6 +41,7 @@ const OCCASIONS = ['Wedding (विवाह / పెళ్లి)', 'Housewarmi
 
 const Gifts: React.FC = () => {
   const { t } = useTranslation();
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   // Data states
   const [people, setPeople] = useState<PersonRecord[]>([]);
@@ -50,6 +53,10 @@ const Gifts: React.FC = () => {
   const [showAddPersonModal, setShowAddPersonModal] = useState(false);
   const [showAddGiftModal, setShowAddGiftModal] = useState(false);
   const [showEditPersonModal, setShowEditPersonModal] = useState(false);
+
+  // Deletion Confirmation states (Item 2)
+  const [deleteTargetPerson, setDeleteTargetPerson] = useState<PersonRecord | null>(null);
+  const [deleteTargetGift, setDeleteTargetGift] = useState<GiftTransaction | null>(null);
 
   // Edit Person form state
   const [editingPerson, setEditingPerson] = useState<PersonRecord | null>(null);
@@ -72,7 +79,7 @@ const Gifts: React.FC = () => {
   const [weightGrams, setWeightGrams] = useState('');
   const [purity, setPurity] = useState('22K');
   const [occasion, setOccasion] = useState(OCCASIONS[0]);
-  const [giftDate, setGiftDate] = useState(new Date().toISOString().split('T')[0]);
+  const [giftDate, setGiftDate] = useState(todayStr);
   const [notes, setNotes] = useState('');
 
   useEffect(() => {
@@ -142,15 +149,9 @@ const Gifts: React.FC = () => {
     }
   };
 
-  const handleDeletePerson = async (person: PersonRecord, e: React.MouseEvent) => {
+  const handleDeletePerson = (person: PersonRecord, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm(`Delete "${person.name}" and remove all their gift entries from your ledger?`)) {
-      await deletePerson(person.id, person.name);
-      if (selectedPerson?.id === person.id) {
-        setSelectedPerson(null);
-      }
-      await loadAllData();
-    }
+    setDeleteTargetPerson(person);
   };
 
   const handleOpenEditPerson = (person: PersonRecord, e?: React.MouseEvent) => {
@@ -258,11 +259,8 @@ const Gifts: React.FC = () => {
     await loadAllData();
   };
 
-  const handleDeleteGiftItem = async (giftId: string) => {
-    if (window.confirm('Delete this gift entry?')) {
-      await deleteGift(giftId);
-      loadAllData();
-    }
+  const handleDeleteGiftItem = (gift: GiftTransaction) => {
+    setDeleteTargetGift(gift);
   };
 
   // Helper stats for a person
@@ -558,7 +556,7 @@ const Gifts: React.FC = () => {
 
                         {/* Delete entry */}
                         <button 
-                          onClick={() => handleDeleteGiftItem(gift.id)}
+                          onClick={() => handleDeleteGiftItem(gift)}
                           className="text-textMuted/40 hover:text-red-500 p-1"
                           title="Delete gift entry"
                         >
@@ -575,8 +573,8 @@ const Gifts: React.FC = () => {
       )}
 
       {/* ================= MODAL 1: ADD PERSON (FACE CARD) ================= */}
-      {showAddPersonModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showAddPersonModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-5">
@@ -658,12 +656,13 @@ const Gifts: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL: EDIT PERSON DETAILS ================= */}
-      {showEditPersonModal && editingPerson && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showEditPersonModal && editingPerson && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -759,7 +758,7 @@ const Gifts: React.FC = () => {
                     Cancel
                   </button>
                   <button 
-                    type="button"
+                    type="button" 
                     onClick={handleSaveEditPerson} 
                     disabled={!editPersonName.trim()}
                     className="flex-1 py-2.5 bg-primary-600 disabled:opacity-50 text-white font-bold rounded-xl hover:bg-primary-700 transition-colors shadow-soft text-xs"
@@ -770,12 +769,13 @@ const Gifts: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL 2: ADD GIFT BETWEEN US ================= */}
-      {showAddGiftModal && selectedPerson && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showAddGiftModal && selectedPerson && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -927,6 +927,7 @@ const Gifts: React.FC = () => {
                     <input 
                       type="date" 
                       value={giftDate} 
+                      max={todayStr}
                       onChange={e => setGiftDate(e.target.value)} 
                       className="w-full mt-1 p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs text-textMain"
                     />
@@ -968,8 +969,46 @@ const Gifts: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
+
+      {/* ================= CONFIRMATION MODALS ================= */}
+
+      {/* Delete Person Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTargetPerson}
+        title="Delete Person Card"
+        itemName={deleteTargetPerson?.name}
+        message="Are you sure you want to delete this person and all their gift ledger records? This cannot be undone."
+        onConfirm={async () => {
+          if (deleteTargetPerson) {
+            await deletePerson(deleteTargetPerson.id, deleteTargetPerson.name);
+            if (selectedPerson?.id === deleteTargetPerson.id) {
+              setSelectedPerson(null);
+            }
+            setDeleteTargetPerson(null);
+            await loadAllData();
+          }
+        }}
+        onCancel={() => setDeleteTargetPerson(null)}
+      />
+
+      {/* Delete Gift Entry Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTargetGift}
+        title="Delete Gift Record"
+        itemName={deleteTargetGift ? `${deleteTargetGift.item} (₹${deleteTargetGift.amount.toLocaleString('en-IN')})` : ''}
+        message="Are you sure you want to delete this gift entry from history? This cannot be undone."
+        onConfirm={async () => {
+          if (deleteTargetGift) {
+            await deleteGift(deleteTargetGift.id);
+            setDeleteTargetGift(null);
+            await loadAllData();
+          }
+        }}
+        onCancel={() => setDeleteTargetGift(null)}
+      />
 
     </div>
   );

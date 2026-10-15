@@ -492,9 +492,6 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                       <Sparkles size={10} />
                     </div>
                     <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
-                    <span className="text-[9px] bg-primary-50 text-primary-800 font-extrabold px-1.5 py-0.2 rounded border border-primary-200/60 uppercase">
-                      {msg.lang || chatLanguage}
-                    </span>
                   </div>
 
                   {/* Copy Action */}

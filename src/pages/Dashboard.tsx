@@ -7,11 +7,14 @@ import { format, subDays, subMonths, isSameDay, isSameMonth } from 'date-fns';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
+import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
+
 const Dashboard: React.FC = () => {
   const { t } = useTranslation();
   const [transactions, setTransactions] = useState<HemaDB['transactions']['value'][]>([]);
   const [timeframe, setTimeframe] = useState<'weekly' | 'monthly' | 'yearly'>('weekly');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [deletingTx, setDeletingTx] = useState<HemaDB['transactions']['value'] | null>(null);
 
   useEffect(() => {
     fetchDB();
@@ -22,9 +25,10 @@ const Dashboard: React.FC = () => {
     setTransactions(txs.sort((a, b) => b.date - a.date));
   };
 
-  const handleDelete = async (id: string) => {
-    if (window.confirm('Delete this transaction?')) {
-      await deleteTransaction(id);
+  const handleConfirmDelete = async () => {
+    if (deletingTx) {
+      await deleteTransaction(deletingTx.id);
+      setDeletingTx(null);
       fetchDB();
     }
   };
@@ -281,7 +285,7 @@ const Dashboard: React.FC = () => {
                     {tx.type === 'EXPENSE' ? '-' : '+'}₹{tx.amount.toLocaleString('en-IN')}
                   </span>
                   <button 
-                    onClick={() => handleDelete(tx.id)} 
+                    onClick={() => setDeletingTx(tx)} 
                     className="text-textMuted hover:text-red-500 p-1.5 transition-colors"
                     title="Delete transaction"
                   >
@@ -307,6 +311,16 @@ const Dashboard: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!deletingTx}
+        title="Delete Transaction?"
+        itemName={deletingTx ? `${deletingTx.label || deletingTx.categoryId} • ₹${deletingTx.amount.toLocaleString('en-IN')}` : undefined}
+        message="Are you sure you want to permanently delete this transaction from your ledger?"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeletingTx(null)}
+      />
     </div>
   );
 };

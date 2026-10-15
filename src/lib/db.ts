@@ -80,6 +80,7 @@ export interface DebtPayment {
 export interface DebtRecordItem {
   id: string;
   person: string;
+  avatarUrl?: string; // Photo data URI or avatar
   principalAmount: number; // Original loan amount
   amount: number; // Total repayable amount (Principal + Interest)
   type: 'WE_OWE' | 'OWED_TO_US';
@@ -319,6 +320,21 @@ export const recordDebtPayment = async (debtId: string, payment: DebtPayment) =>
     const totalDue = debt.amount || debt.principalAmount;
     if (totalPaid >= totalDue) {
       debt.status = 'SETTLED';
+    }
+    await db.put('debts', debt);
+  }
+};
+
+export const deleteDebtPayment = async (debtId: string, paymentId: string) => {
+  const db = await initDB();
+  const debt = await db.get('debts', debtId);
+  if (debt && debt.payments) {
+    debt.payments = debt.payments.filter(p => p.id !== paymentId);
+    // Recalculate status: if total paid is now less than total due, revert from SETTLED to PENDING
+    const totalPaid = debt.payments.reduce((sum, p) => sum + p.amount, 0);
+    const totalDue = debt.amount || debt.principalAmount;
+    if (totalPaid < totalDue && debt.status === 'SETTLED') {
+      debt.status = 'PENDING';
     }
     await db.put('debts', debt);
   }

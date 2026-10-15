@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Card, CardContent } from '@/components/ui/Card';
 import { 
   Users, 
@@ -23,7 +24,8 @@ import {
   Check,
   ShieldCheck,
   Navigation,
-  RotateCcw
+  RotateCcw,
+  Image as ImageIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -34,15 +36,18 @@ import {
   deleteDebt,
   updateDebtStatus, 
   recordDebtPayment,
+  deleteDebtPayment,
   DebtRecordItem, 
   DebtPayment 
 } from '@/lib/db';
+import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { format } from 'date-fns';
 
 const PAYMENT_MODES = ['UPI (GPay / PhonePe / Paytm)', 'Cash (Hand-to-Hand)', 'Bank NEFT / IMPS', 'Cheque', 'Other'];
 
 const Debts: React.FC = () => {
   const { t } = useTranslation();
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [activeTab, setActiveTab] = useState<'PENDING' | 'SETTLED'>('PENDING');
   const [debts, setDebts] = useState<DebtRecordItem[]>([]);
   
@@ -53,7 +58,7 @@ const Debts: React.FC = () => {
   // Repayment Modal
   const [repaymentDebt, setRepaymentDebt] = useState<DebtRecordItem | null>(null);
   const [payAmount, setPayAmount] = useState('');
-  const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
+  const [payDate, setPayDate] = useState(todayStr);
   const [payMode, setPayMode] = useState(PAYMENT_MODES[0]);
   const [payNotes, setPayNotes] = useState('');
 
@@ -67,12 +72,18 @@ const Debts: React.FC = () => {
   // Proof Preview Modal
   const [viewProofPayment, setViewProofPayment] = useState<DebtPayment | null>(null);
 
+  // Deletion and Reopen Confirmation Modals
+  const [deleteTargetDebt, setDeleteTargetDebt] = useState<DebtRecordItem | null>(null);
+  const [deleteTargetPayment, setDeleteTargetPayment] = useState<{ debtId: string; payment: DebtPayment } | null>(null);
+  const [reopenTargetDebt, setReopenTargetDebt] = useState<DebtRecordItem | null>(null);
+
   // Form State (Add / Edit)
   const [person, setPerson] = useState('');
+  const [avatarPhoto, setAvatarPhoto] = useState<string | null>(null);
   const [principal, setPrincipal] = useState('');
   const [debtType, setDebtType] = useState<'WE_OWE' | 'OWED_TO_US'>('OWED_TO_US');
   const [dueDateStr, setDueDateStr] = useState('');
-  const [startDateStr, setStartDateStr] = useState(new Date().toISOString().split('T')[0]);
+  const [startDateStr, setStartDateStr] = useState(todayStr);
   const [notes, setNotes] = useState('');
 
   // Interest & Formula Engine State
@@ -235,14 +246,47 @@ const Debts: React.FC = () => {
     }
   };
 
+  const handleAvatarCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxDim = 300;
+          let w = img.width;
+          let h = img.height;
+          if (w > h && w > maxDim) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else if (h > maxDim) {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, w, h);
+            setAvatarPhoto(canvas.toDataURL('image/jpeg', 0.8));
+          }
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   // Open Edit Modal populated with existing values
   const handleOpenEdit = (debt: DebtRecordItem) => {
     setEditingDebt(debt);
     setPerson(debt.person);
+    setAvatarPhoto(debt.avatarUrl || null);
     setPrincipal(String(debt.principalAmount || debt.amount));
     setDebtType(debt.type);
     setDueDateStr(debt.dueDate ? new Date(debt.dueDate).toISOString().split('T')[0] : '');
-    setStartDateStr(debt.dateCreated ? new Date(debt.dateCreated).toISOString().split('T')[0] : '');
+    setStartDateStr(debt.dateCreated ? new Date(debt.dateCreated).toISOString().split('T')[0] : todayStr);
     setNotes(debt.notes || '');
     setInterestType(debt.interestType || 'NONE');
     setInterestRate(String(debt.interestRate ?? 2));
@@ -254,9 +298,10 @@ const Debts: React.FC = () => {
   const handleOpenAdd = () => {
     setEditingDebt(null);
     setPerson('');
+    setAvatarPhoto(null);
     setPrincipal('');
     setDueDateStr('');
-    setStartDateStr(new Date().toISOString().split('T')[0]);
+    setStartDateStr(todayStr);
     setNotes('');
     setInterestType('NONE');
     setInterestRate('2');
@@ -277,6 +322,7 @@ const Debts: React.FC = () => {
       const updatedItem: DebtRecordItem = {
         ...editingDebt,
         person: person.trim(),
+        avatarUrl: avatarPhoto || undefined,
         principalAmount: P,
         amount: totalRepayable,
         type: debtType,
@@ -294,6 +340,7 @@ const Debts: React.FC = () => {
       const newItem: DebtRecordItem = {
         id: crypto.randomUUID(),
         person: person.trim(),
+        avatarUrl: avatarPhoto || undefined,
         principalAmount: P,
         amount: totalRepayable,
         type: debtType,
@@ -313,31 +360,27 @@ const Debts: React.FC = () => {
 
     setShowModal(false);
     setEditingDebt(null);
+    setAvatarPhoto(null);
     fetchDebts();
   };
 
-  const handleDelete = async (id: string) => {
-    if (window.confirm('Delete this loan record completely?')) {
-      await deleteDebt(id);
-      fetchDebts();
-    }
+  const handleDelete = (debt: DebtRecordItem) => {
+    setDeleteTargetDebt(debt);
   };
 
   const handleOpenSettleWithProof = (debt: DebtRecordItem) => {
     const { remaining } = getDebtBalance(debt);
     setRepaymentDebt(debt);
     setPayAmount(String(remaining > 0 ? remaining : debt.amount));
+    setPayDate(todayStr);
     setPayNotes('Full final settlement');
     setProofPhoto(null);
     setCoords(null);
     setVerifiedTimestamp(Date.now());
   };
 
-  const handleReopenDebt = async (debt: DebtRecordItem) => {
-    if (window.confirm(`Reopen loan for "${debt.person}" and return it to Active loans? You will be able to edit details or adjust payment entries.`)) {
-      await updateDebtStatus(debt.id, 'PENDING');
-      fetchDebts();
-    }
+  const handleReopenDebt = (debt: DebtRecordItem) => {
+    setReopenTargetDebt(debt);
   };
 
   // Record Payment with Proof Photo + Geolocation + Timestamp
@@ -468,14 +511,40 @@ const Debts: React.FC = () => {
                     : "bg-surface border-borderLight shadow-sm"
                 )}
               >
+                {/* Settled Summary Banner at Top of Card (User Feedback 4) */}
+                {debt.status === 'SETTLED' && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-center justify-between text-xs text-emerald-950">
+                    <div className="flex items-center space-x-2">
+                      <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                      <div>
+                        <p className="font-extrabold text-xs text-emerald-900 tracking-tight">✓ FULLY SETTLED & CLOSED</p>
+                        <p className="text-[10px] text-emerald-700">Cleared Total: ₹{totalDue.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] uppercase font-bold text-emerald-800 bg-emerald-100/90 px-2 py-0.5 rounded-full border border-emerald-200 shrink-0">
+                      ₹0 Pending
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-3">
-                    <div className={cn(
-                      "w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-0.5",
-                      debt.status === 'SETTLED' ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"
-                    )}>
-                      <Users size={18} />
-                    </div>
+                    {/* Person Avatar Photo or Silhouette Icon (User Feedback 6) */}
+                    {debt.avatarUrl ? (
+                      <img 
+                        src={debt.avatarUrl} 
+                        alt={debt.person} 
+                        className="w-10 h-10 rounded-full object-cover shrink-0 mt-0.5 border border-borderLight shadow-xs" 
+                      />
+                    ) : (
+                      <div className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center shrink-0 mt-0.5",
+                        debt.status === 'SETTLED' ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"
+                      )}>
+                        <Users size={18} />
+                      </div>
+                    )}
+
                     <div>
                       <div className="flex items-center space-x-2">
                         <p className="font-bold text-textMain text-sm">{debt.person}</p>
@@ -489,7 +558,7 @@ const Debts: React.FC = () => {
                           </button>
                         )}
                         <button 
-                          onClick={() => handleDelete(debt.id)} 
+                          onClick={() => handleDelete(debt)} 
                           className="text-textMuted hover:text-red-500 p-1"
                           title="Delete Loan"
                         >
@@ -497,37 +566,47 @@ const Debts: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                        <span className={cn(
-                          "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
-                          debt.type === 'WE_OWE' ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
-                        )}>
-                          {debt.type === 'WE_OWE' ? t('debts.to_pay') : t('debts.to_collect')}
-                        </span>
-                        <span className="text-xs text-textMuted">
-                          Due: {format(new Date(debt.dueDate), 'dd MMM yyyy')}
-                        </span>
-                      </div>
+                      {debt.status !== 'SETTLED' ? (
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className={cn(
+                            "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
+                            debt.type === 'WE_OWE' ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
+                          )}>
+                            {debt.type === 'WE_OWE' ? t('debts.to_pay') : t('debts.to_collect')}
+                          </span>
+                          <span className="text-xs text-textMuted">
+                            Due: {format(new Date(debt.dueDate), 'dd MMM yyyy')}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center space-x-2 text-[11px] text-textMuted mt-1">
+                          <span>Started: {format(new Date(debt.dateCreated), 'dd MMM yyyy')}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                   
-                  {/* Amount Breakdown */}
-                  <div className="flex flex-col items-end text-right">
-                    <span className="font-bold text-lg text-textMain">₹{remaining.toLocaleString('en-IN')}</span>
-                    <span className="text-[11px] text-textMuted">
-                      Total: ₹{totalDue.toLocaleString('en-IN')} {paidSoFar > 0 && `(Paid: ₹${paidSoFar.toLocaleString('en-IN')})`}
-                    </span>
-                    {debt.status === 'OVERDUE' && (
-                      <span className="flex items-center text-[10px] text-red-500 font-bold mt-1">
-                        <AlertCircle size={10} className="mr-1" /> {t('debts.overdue')}
+                  {/* Amount Breakdown (Settled cleared state vs Active remaining) */}
+                  {debt.status !== 'SETTLED' ? (
+                    <div className="flex flex-col items-end text-right">
+                      <span className="font-bold text-lg text-textMain">₹{remaining.toLocaleString('en-IN')}</span>
+                      <span className="text-[11px] text-textMuted">
+                        Total: ₹{totalDue.toLocaleString('en-IN')} {paidSoFar > 0 && `(Paid: ₹${paidSoFar.toLocaleString('en-IN')})`}
                       </span>
-                    )}
-                    {debt.status === 'SETTLED' && (
-                      <span className="flex items-center text-[10px] text-green-500 font-bold mt-1">
-                        <CheckCircle2 size={10} className="mr-1" /> {t('debts.settled')}
+                      {debt.status === 'OVERDUE' && (
+                        <span className="flex items-center text-[10px] text-red-500 font-bold mt-1">
+                          <AlertCircle size={10} className="mr-1" /> {t('debts.overdue')}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-end text-right">
+                      <span className="font-extrabold text-base text-emerald-700">₹{totalDue.toLocaleString('en-IN')}</span>
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 mt-0.5">
+                        Cleared
                       </span>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Interest Badge info */}
@@ -584,18 +663,30 @@ const Debts: React.FC = () => {
                             )}
                           </div>
 
-                          {/* View Proof Button */}
-                          {p.proofPhoto ? (
-                            <button 
-                              onClick={() => setViewProofPayment(p)}
-                              className="flex items-center space-x-1 px-2.5 py-1 bg-primary-50 text-primary-700 border border-primary-200 rounded-lg text-[11px] font-bold hover:bg-primary-100 transition-colors"
+                          <div className="flex items-center space-x-1.5 shrink-0">
+                            {/* View Proof Button */}
+                            {p.proofPhoto ? (
+                              <button 
+                                onClick={() => setViewProofPayment(p)}
+                                className="flex items-center space-x-1 px-2.5 py-1 bg-primary-50 text-primary-700 border border-primary-200 rounded-lg text-[11px] font-bold hover:bg-primary-100 transition-colors"
+                              >
+                                <Eye size={12} />
+                                <span>Proof</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-textMuted italic">No Photo</span>
+                            )}
+
+                            {/* Delete partial payment button (Feedback 5) */}
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTargetPayment({ debtId: debt.id, payment: p })}
+                              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                              title="Delete mistaken payment entry"
                             >
-                              <Eye size={12} />
-                              <span>View Proof</span>
+                              <Trash2 size={13} />
                             </button>
-                          ) : (
-                            <span className="text-[10px] text-textMuted italic">No Photo</span>
-                          )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -606,26 +697,6 @@ const Debts: React.FC = () => {
                   <p className="text-xs text-textMuted italic bg-background p-2 rounded-lg">
                     "{debt.notes}"
                   </p>
-                )}
-
-                {/* Settled Summary Banner */}
-                {debt.status === 'SETTLED' && (
-                  <div className="bg-emerald-50/90 border border-emerald-200/90 rounded-xl p-3 flex items-center justify-between text-xs text-emerald-950">
-                    <div>
-                      <p className="font-extrabold text-xs text-emerald-800 flex items-center">
-                        <CheckCircle2 size={13} className="mr-1 text-emerald-600" />
-                        Loan Fully Closed & Settled
-                      </p>
-                      <p className="text-[11px] text-emerald-700 mt-0.5">
-                        Original Principal: ₹{(debt.principalAmount || debt.amount).toLocaleString('en-IN')}
-                        {debt.interestAmount ? ` + Interest: ₹${debt.interestAmount.toLocaleString('en-IN')}` : ''}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold text-[10px] uppercase tracking-wider text-emerald-900">Total Cleared</p>
-                      <p className="font-extrabold text-base text-emerald-700">₹{totalDue.toLocaleString('en-IN')}</p>
-                    </div>
-                  </div>
                 )}
 
                 {/* Actions: Partial Payment, WhatsApp Remind, Settle with Proof for Active; Reopen for Settled */}
@@ -689,8 +760,8 @@ const Debts: React.FC = () => {
       </div>
 
       {/* ================= MODAL 1: ADD / EDIT LOAN ================= */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-md animate-in zoom-in-95 border-none shadow-2xl max-h-[90vh] overflow-y-auto bg-surface">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -725,6 +796,36 @@ const Debts: React.FC = () => {
                   >
                     We Borrowed (We Owe)
                   </button>
+                </div>
+
+                {/* Person Photo Uploader (Feedback 6) */}
+                <div className="flex items-center space-x-3 bg-slate-50 p-3 rounded-xl border border-borderLight">
+                  <div className="relative shrink-0">
+                    {avatarPhoto ? (
+                      <img src={avatarPhoto} alt="Person" className="w-12 h-12 rounded-full object-cover border-2 border-primary-400" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-slate-200 text-slate-500 flex items-center justify-center border border-borderLight">
+                        <Users size={22} />
+                      </div>
+                    )}
+                    <label className="absolute -bottom-1 -right-1 p-1.5 bg-primary-600 text-white rounded-full cursor-pointer shadow-md hover:bg-primary-700 active:scale-95 transition-all">
+                      <Camera size={12} />
+                      <input type="file" accept="image/*" onChange={handleAvatarCapture} className="hidden" />
+                    </label>
+                  </div>
+                  <div className="text-xs min-w-0">
+                    <p className="font-bold text-textMain">Person Photo (Optional)</p>
+                    <p className="text-[10px] text-textMuted">Tap camera to upload or take a photo</p>
+                    {avatarPhoto && (
+                      <button 
+                        type="button" 
+                        onClick={() => setAvatarPhoto(null)} 
+                        className="text-[10px] text-red-600 font-bold hover:underline mt-0.5"
+                      >
+                        Remove photo
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div>
@@ -858,13 +959,14 @@ const Debts: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Dates */}
+                {/* Dates (Start date restricted from future dates) */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-semibold text-textMuted">Loan Start Date</label>
                     <input 
                       type="date" 
                       value={startDateStr} 
+                      max={todayStr}
                       onChange={e => setStartDateStr(e.target.value)} 
                       className="w-full mt-1 p-2.5 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs text-textMain" 
                     />
@@ -902,12 +1004,13 @@ const Debts: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL 2: RECORD PAYMENT WITH PHOTO PROOF + GEOLOCATION ================= */}
-      {repaymentDebt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {repaymentDebt && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm animate-in zoom-in-95 border-none shadow-2xl bg-surface max-h-[92vh] overflow-y-auto">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -968,12 +1071,13 @@ const Debts: React.FC = () => {
                   </select>
                 </div>
 
-                {/* Date */}
+                {/* Date (Cannot select future dates - Feedback 7) */}
                 <div>
                   <label className="text-xs font-semibold text-textMuted">Payment Date</label>
                   <input 
                     type="date" 
                     value={payDate} 
+                    max={todayStr}
                     onChange={e => setPayDate(e.target.value)} 
                     className="w-full mt-1 p-2.5 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs text-textMain" 
                   />
@@ -1085,12 +1189,13 @@ const Debts: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL 3: VIEW PROOF MODAL ================= */}
-      {viewProofPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
+      {viewProofPayment && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm animate-in zoom-in-95 border-none shadow-2xl bg-surface overflow-hidden">
             <CardContent className="p-5 space-y-3.5">
               <div className="flex justify-between items-center">
@@ -1160,8 +1265,61 @@ const Debts: React.FC = () => {
               </button>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
+
+      {/* ================= CONFIRMATION MODALS ================= */}
+
+      {/* Delete Loan Record Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTargetDebt}
+        title="Delete Loan Record"
+        itemName={deleteTargetDebt ? `${deleteTargetDebt.person} (₹${(deleteTargetDebt.amount || deleteTargetDebt.principalAmount).toLocaleString('en-IN')})` : ''}
+        message="Are you sure you want to permanently delete this loan record and all associated repayment records? This action cannot be undone."
+        onConfirm={async () => {
+          if (deleteTargetDebt) {
+            await deleteDebt(deleteTargetDebt.id);
+            setDeleteTargetDebt(null);
+            await fetchDebts();
+          }
+        }}
+        onCancel={() => setDeleteTargetDebt(null)}
+      />
+
+      {/* Delete Repayment Record Confirmation Modal (Allows fixing mistakes - Feedback 5) */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTargetPayment}
+        title="Delete Payment Entry"
+        itemName={deleteTargetPayment ? `₹${deleteTargetPayment.payment.amount.toLocaleString('en-IN')} (${deleteTargetPayment.payment.mode || 'Cash'})` : ''}
+        message="Are you sure you want to delete this recorded payment? The loan balance will be restored automatically."
+        onConfirm={async () => {
+          if (deleteTargetPayment) {
+            await deleteDebtPayment(deleteTargetPayment.debtId, deleteTargetPayment.payment.id);
+            setDeleteTargetPayment(null);
+            await fetchDebts();
+          }
+        }}
+        onCancel={() => setDeleteTargetPayment(null)}
+      />
+
+      {/* Reopen Loan Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!reopenTargetDebt}
+        title="Reopen Loan to Active"
+        confirmText="Reopen"
+        isDangerous={false}
+        itemName={reopenTargetDebt ? `${reopenTargetDebt.person} (Total: ₹${(reopenTargetDebt.amount || reopenTargetDebt.principalAmount).toLocaleString('en-IN')})` : ''}
+        message="This will move the loan back to the Active tab so you can modify loan details, delete mistaken repayment entries, or record further payments."
+        onConfirm={async () => {
+          if (reopenTargetDebt) {
+            await updateDebtStatus(reopenTargetDebt.id, 'PENDING');
+            setReopenTargetDebt(null);
+            await fetchDebts();
+          }
+        }}
+        onCancel={() => setReopenTargetDebt(null)}
+      />
 
     </div>
   );

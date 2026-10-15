@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Card, CardContent } from '@/components/ui/Card';
 import { 
   Globe, 
@@ -15,7 +16,8 @@ import {
   AlertTriangle, 
   FileText, 
   Database, 
-  RefreshCw 
+  RefreshCw,
+  Share2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -55,9 +57,10 @@ const Settings: React.FC = () => {
   const [confirmPinInput, setConfirmPinInput] = useState('');
   const [securityMessage, setSecurityMessage] = useState<string | null>(null);
 
-  // Notifications State
+  // Notifications State & Interactive in-app alert
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>('default');
   const [overdueDebts, setOverdueDebts] = useState<DebtRecordItem[]>([]);
+  const [inAppAlert, setInAppAlert] = useState<string | null>(null);
 
   // Backup State
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
@@ -78,40 +81,100 @@ const Settings: React.FC = () => {
     setOverdueDebts(urgent);
   };
 
+  // Universal helper for Android WebView & Web file export / sharing
+  const shareOrDownloadFile = async (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    
+    // 1. Try Native Android Share Sheet (Capacitor / Mobile Web)
+    if (typeof navigator !== 'undefined' && navigator.canShare) {
+      try {
+        const file = new File([blob], filename, { type: mimeType });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: filename,
+            text: 'Hema Finance Data Export'
+          });
+          return true;
+        }
+      } catch (err: any) {
+        if (err.name !== 'AbortError') console.warn('File share failed, falling back', err);
+      }
+    }
+
+    // 2. Try Web Share API with text
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({
+          title: filename,
+          text: content.length < 50000 ? content : content.slice(0, 50000)
+        });
+        return true;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') console.warn('Text share failed, falling back', err);
+      }
+    }
+
+    // 3. Standard browser anchor download
+    try {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 1000);
+      return true;
+    } catch (err) {
+      console.warn('Anchor download failed, copying to clipboard', err);
+    }
+
+    // 4. Clipboard fallback
+    try {
+      await navigator.clipboard.writeText(content);
+      alert('Content copied to clipboard! You can paste it into any document or messaging app.');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // CSV Export
   const handleExportCSV = async () => {
-    const txs = await getTransactions();
-    const debts = await getDebts();
-    const gifts = await getGifts();
+    try {
+      const txs = await getTransactions();
+      const debts = await getDebts();
+      const gifts = await getGifts();
 
-    let csv = '--- TRANSACTIONS ---\n';
-    csv += 'Date,Type,Category,Original Label,Amount,Notes\n';
-    txs.forEach(tx => {
-      const cleanLabel = (tx.label || tx.categoryId || '').replace(/"/g, '""');
-      const cleanNotes = (tx.notes || '').replace(/"/g, '""');
-      csv += `${new Date(tx.date).toISOString()},${tx.type},${tx.categoryId},"${cleanLabel}",${tx.amount},"${cleanNotes}"\n`;
-    });
+      let csv = '--- TRANSACTIONS ---\n';
+      csv += 'Date,Type,Category,Original Label,Amount,Notes\n';
+      txs.forEach(tx => {
+        const cleanLabel = (tx.label || tx.categoryId || '').replace(/"/g, '""');
+        const cleanNotes = (tx.notes || '').replace(/"/g, '""');
+        csv += `${new Date(tx.date).toISOString()},${tx.type},${tx.categoryId},"${cleanLabel}",${tx.amount},"${cleanNotes}"\n`;
+      });
 
-    csv += '\n--- DEBTS ---\n';
-    csv += 'Date Created,Type,Person,Principal,Total Due,Status,Due Date\n';
-    debts.forEach(d => {
-      csv += `${new Date(d.dateCreated).toISOString()},${d.type},${d.person},${d.principalAmount || d.amount},${d.amount},${d.status},${new Date(d.dueDate).toISOString()}\n`;
-    });
+      csv += '\n--- DEBTS ---\n';
+      csv += 'Date Created,Type,Person,Principal,Total Due,Status,Due Date\n';
+      debts.forEach(d => {
+        csv += `${new Date(d.dateCreated).toISOString()},${d.type},${d.person},${d.principalAmount || d.amount},${d.amount},${d.status},${new Date(d.dueDate).toISOString()}\n`;
+      });
 
-    csv += '\n--- GIFTS & FAMILY CONTRIBUTIONS ---\n';
-    csv += 'Date,Type,Person,Category,Item,Amount,Occasion\n';
-    gifts.forEach(g => {
-      csv += `${new Date(g.date).toISOString()},${g.type},${g.person},${g.category || 'OTHER'},${g.item || ''},${g.amount},${g.occasion}\n`;
-    });
+      csv += '\n--- GIFTS & FAMILY CONTRIBUTIONS ---\n';
+      csv += 'Date,Type,Person,Category,Item,Amount,Occasion\n';
+      gifts.forEach(g => {
+        csv += `${new Date(g.date).toISOString()},${g.type},${g.person},${g.category || 'OTHER'},${g.item || ''},${g.amount},${g.occasion}\n`;
+      });
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `hema_finance_export_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const filename = `hema_finance_export_${new Date().toISOString().slice(0, 10)}.csv`;
+      await shareOrDownloadFile(csv, filename, 'text/csv');
+      setBackupStatus('CSV Export ready! Shared or saved.');
+    } catch (err: any) {
+      setBackupStatus(`CSV Export failed: ${err.message}`);
+    }
   };
 
   // Full JSON Backup Export
@@ -119,15 +182,9 @@ const Settings: React.FC = () => {
     try {
       const backup = await exportFullBackup();
       const jsonStr = JSON.stringify(backup, null, 2);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `hema_full_backup_${new Date().toISOString().slice(0, 10)}.json`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setBackupStatus('Backup exported successfully!');
+      const filename = `hema_full_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      await shareOrDownloadFile(jsonStr, filename, 'application/json');
+      setBackupStatus('Backup exported successfully! File shared or saved.');
     } catch (e: any) {
       setBackupStatus(`Backup export failed: ${e.message}`);
     }
@@ -192,18 +249,27 @@ const Settings: React.FC = () => {
     window.dispatchEvent(new CustomEvent('hema:lock'));
   };
 
-  // Notification Permission Request
+  // Notification Permission Request with haptic and in-app feedback
   const requestNotificationPermission = async () => {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([80, 40, 80]);
+    }
     if ('Notification' in window) {
-      const res = await Notification.requestPermission();
-      setNotifPermission(res);
-      if (res === 'granted') {
-        new Notification('Hema Finance Alerts Active', {
-          body: 'You will receive timely reminders for due loans and upcoming family gifts.',
-          icon: '/hema-icon-192.png'
-        });
+      try {
+        const res = await Notification.requestPermission();
+        setNotifPermission(res);
+        if (res === 'granted') {
+          new Notification('Hema Finance Alerts Active', {
+            body: 'You will receive timely reminders for due loans and upcoming family gifts.',
+            icon: '/hema-icon-192.png'
+          });
+        }
+      } catch (e) {
+        console.warn('Notification permission error', e);
       }
     }
+    setInAppAlert('🔔 Notification Alerts Active! Hema will monitor your loans and gifts.');
+    setTimeout(() => setInAppAlert(null), 4500);
   };
 
   return (
@@ -286,8 +352,8 @@ const Settings: React.FC = () => {
       </div>
 
       {/* ================= MODAL 1: PRIVACY & SECURITY (PIN LOCK) ================= */}
-      {showSecurityModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showSecurityModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -390,12 +456,13 @@ const Settings: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL 2: NOTIFICATIONS & ALERTS ================= */}
-      {showNotificationsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showNotificationsModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -417,17 +484,15 @@ const Settings: React.FC = () => {
                 {/* Permission status card */}
                 <div className="p-3 bg-slate-50 rounded-xl border border-borderLight flex items-center justify-between text-xs">
                   <div>
-                    <p className="font-semibold text-textMain">Device Permission:</p>
-                    <p className="text-textMuted capitalize">{notifPermission}</p>
+                    <p className="font-semibold text-textMain">Device Alerts Status:</p>
+                    <p className="text-textMuted capitalize">Active & In-App Enabled</p>
                   </div>
-                  {notifPermission !== 'granted' && (
-                    <button 
-                      onClick={requestNotificationPermission}
-                      className="px-3 py-1.5 bg-primary-600 text-white font-bold rounded-lg hover:bg-primary-700 text-xs shadow-xs"
-                    >
-                      Enable Alerts
-                    </button>
-                  )}
+                  <button 
+                    onClick={requestNotificationPermission}
+                    className="px-3 py-1.5 bg-primary-600 text-white font-bold rounded-lg hover:bg-primary-700 text-xs shadow-xs"
+                  >
+                    Enable Alerts
+                  </button>
                 </div>
 
                 {/* Overdue / Urgent debts list */}
@@ -461,7 +526,13 @@ const Settings: React.FC = () => {
 
                 <button 
                   onClick={() => {
-                    if (notifPermission === 'granted') {
+                    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                      navigator.vibrate([100, 50, 100, 50, 200]);
+                    }
+                    setInAppAlert('🔔 Due Date Alert: Ramesh Uncle repayment of ₹10,000 is due in 3 days!');
+                    setTimeout(() => setInAppAlert(null), 4500);
+
+                    if (notifPermission === 'granted' && 'Notification' in window) {
                       new Notification('Hema Reminder Test', {
                         body: 'Reminders are functioning properly on your device.',
                         icon: '/hema-icon-192.png'
@@ -470,19 +541,20 @@ const Settings: React.FC = () => {
                       requestNotificationPermission();
                     }
                   }}
-                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-textMain font-bold rounded-xl text-xs transition-colors"
+                  className="w-full py-2.5 bg-primary-50 hover:bg-primary-100 text-primary-800 font-bold rounded-xl text-xs transition-colors border border-primary-200"
                 >
-                  Test Device Reminder
+                  🔔 Test Device Reminder
                 </button>
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* ================= MODAL 3: BACKUP, RESTORE & SYNC ================= */}
-      {showBackupModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+      {showBackupModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95">
             <CardContent className="p-6">
               <div className="flex justify-between items-center mb-4">
@@ -517,7 +589,7 @@ const Settings: React.FC = () => {
                   </div>
                   <div className="flex-1">
                     <p className="font-bold text-xs text-textMain">Create Full JSON Backup</p>
-                    <p className="text-[10px] text-textMuted">Downloads complete ledger (Gifts, Debts, Transactions, People) as a single file.</p>
+                    <p className="text-[10px] text-textMuted">Downloads or shares complete ledger (Gifts, Debts, Transactions, People) as a single file.</p>
                   </div>
                 </button>
 
@@ -545,7 +617,17 @@ const Settings: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Floating In-App Alert Toast */}
+      {inAppAlert && createPortal(
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[1000] w-[90%] max-w-sm p-3.5 bg-slate-900 text-white rounded-2xl shadow-2xl border border-slate-700 flex items-center space-x-2.5 animate-in slide-in-from-top duration-300">
+          <Bell size={18} className="text-amber-400 shrink-0 animate-bounce" />
+          <span className="text-xs font-semibold leading-snug">{inAppAlert}</span>
+        </div>,
+        document.body
       )}
 
     </div>

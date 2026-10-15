@@ -21,6 +21,7 @@ import { addTransaction, getTransactions, deleteTransaction, HemaDB } from '@/li
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { format, isSameDay } from 'date-fns';
+import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 
 type HistoryFilterType = 'ALL' | 'EXPENSE' | 'INCOME';
 
@@ -36,17 +37,19 @@ const Expenses: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [isSaved, setIsSaved] = useState(false);
   const [balance, setBalance] = useState<number>(0);
-  const [txDate, setTxDate] = useState(new Date().toISOString().split('T')[0]);
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const [txDate, setTxDate] = useState(todayStr);
 
   // All Transactions for History Log
   const [allTransactions, setAllTransactions] = useState<HemaDB['transactions']['value'][]>([]);
 
-  // History Filter state
-  const [historyTab, setHistoryTab] = useState<HistoryFilterType>('EXPENSE');
+  // History Filter state (decoupled from top form)
+  const [historyTab, setHistoryTab] = useState<HistoryFilterType>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMonth, setSelectedMonth] = useState<string>('ALL'); // 'ALL' or '0'..'11'
   const [selectedYear, setSelectedYear] = useState<string>('ALL'); // 'ALL' or '2026'..
   const [specificDateFilter, setSpecificDateFilter] = useState<string>(''); // YYYY-MM-DD or empty
+  const [deleteTargetTx, setDeleteTargetTx] = useState<HemaDB['transactions']['value'] | null>(null);
 
   const fetchTransactions = async () => {
     const txs = await getTransactions();
@@ -62,10 +65,9 @@ const Expenses: React.FC = () => {
     fetchTransactions();
   }, []);
 
-  // When user toggles top form type, sync history tab to that type
+  // Decoupled: changing top form does NOT change bottom history filter
   const handleTypeChange = (newType: 'EXPENSE' | 'INCOME') => {
     setType(newType);
-    setHistoryTab(newType);
   };
 
   // Sync voice input
@@ -115,16 +117,13 @@ const Expenses: React.FC = () => {
       setAmount('');
       setRawCategory('');
       setNotes('');
-      setTxDate(new Date().toISOString().split('T')[0]);
+      setTxDate(todayStr);
       setResolvedCategory(null);
     }, 1500);
   };
 
-  const handleDeleteTx = async (id: string) => {
-    if (window.confirm('Delete this transaction from history?')) {
-      await deleteTransaction(id);
-      fetchTransactions();
-    }
+  const handleDeleteTx = (tx: HemaDB['transactions']['value']) => {
+    setDeleteTargetTx(tx);
   };
 
   // Extract available years from transactions
@@ -337,6 +336,7 @@ const Expenses: React.FC = () => {
               <input
                 type="date"
                 value={txDate}
+                max={todayStr}
                 onChange={(e) => setTxDate(e.target.value)}
                 className="w-full p-2.5 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs text-textMain"
               />
@@ -479,6 +479,7 @@ const Expenses: React.FC = () => {
             <input
               type="date"
               value={specificDateFilter}
+              max={todayStr}
               onChange={(e) => setSpecificDateFilter(e.target.value)}
               title="Filter by exact day"
               className="p-1.5 bg-background rounded-xl border border-borderLight text-textMain outline-none text-[11px]"
@@ -571,7 +572,7 @@ const Expenses: React.FC = () => {
                         </span>
                         <button 
                           type="button"
-                          onClick={() => handleDeleteTx(tx.id)}
+                          onClick={() => handleDeleteTx(tx)}
                           className="text-textMuted hover:text-red-500 p-1.5 transition-colors"
                           title="Delete transaction log"
                         >
@@ -596,7 +597,7 @@ const Expenses: React.FC = () => {
               </p>
               {hasActiveFilters && (
                 <button 
-                  type="button"
+                  type="button" 
                   onClick={clearAllFilters}
                   className="mt-2 px-3 py-1 bg-primary-50 text-primary-700 rounded-lg text-xs font-bold hover:bg-primary-100"
                 >
@@ -607,6 +608,22 @@ const Expenses: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Delete Transaction Confirmation Heads-Up Modal */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTargetTx}
+        title="Delete Transaction"
+        itemName={deleteTargetTx ? `${deleteTargetTx.type === 'EXPENSE' ? '-' : '+'}₹${deleteTargetTx.amount.toLocaleString('en-IN')} (${deleteTargetTx.label || deleteTargetTx.categoryId})` : ''}
+        message="Are you sure you want to permanently delete this transaction from your history? This action cannot be undone."
+        onConfirm={async () => {
+          if (deleteTargetTx) {
+            await deleteTransaction(deleteTargetTx.id);
+            setDeleteTargetTx(null);
+            await fetchTransactions();
+          }
+        }}
+        onCancel={() => setDeleteTargetTx(null)}
+      />
 
     </div>
   );
