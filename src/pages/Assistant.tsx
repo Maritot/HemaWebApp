@@ -16,13 +16,16 @@ import {
   Coins,
   Percent,
   Wallet,
-  Gift
+  Gift,
+  FileSpreadsheet,
+  Download
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { FormattedChatMessage } from '@/components/FormattedChatMessage';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
+import { exportAndSaveFile } from '@/lib/nativeFiles';
 import { 
   queryGeminiStream,
   getGeminiApiKey, 
@@ -50,6 +53,63 @@ const getInitialGreeting = (lang: string): string => {
   return 'Namaste! I am Hema, your household financial companion. Ask me anything about gold rates, informal ₹ Vaddi calculations, or family budgeting.';
 };
 
+/**
+ * Converts Markdown table(s) embedded in text into clean, Excel-compatible CSV.
+ */
+export function extractMarkdownTablesAsCSV(markdown: string): string | null {
+  if (!markdown || !markdown.includes('|')) return null;
+
+  const lines = markdown.split('\n');
+  const csvTables: string[] = [];
+  let currentTableLines: string[] = [];
+  let inTable = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      const isDelimiter = /^\|[\s\-:|]+\|$/.test(trimmed);
+      if (!isDelimiter) {
+        currentTableLines.push(trimmed);
+      }
+      inTable = true;
+    } else {
+      if (inTable && currentTableLines.length > 0) {
+        const rows = currentTableLines.map(row => {
+          const cells = row.split('|').slice(1, -1).map(c => {
+            let clean = c.trim()
+              .replace(/\*\*([^*]+)\*\*/g, '$1')
+              .replace(/\*([^*]+)\*/g, '$1')
+              .replace(/`([^`]+)`/g, '$1');
+            clean = clean.replace(/"/g, '""');
+            return `"${clean}"`;
+          });
+          return cells.join(',');
+        });
+        csvTables.push(rows.join('\r\n'));
+        currentTableLines = [];
+      }
+      inTable = false;
+    }
+  }
+
+  if (inTable && currentTableLines.length > 0) {
+    const rows = currentTableLines.map(row => {
+      const cells = row.split('|').slice(1, -1).map(c => {
+        let clean = c.trim()
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/\*([^*]+)\*/g, '$1')
+          .replace(/`([^`]+)`/g, '$1');
+        clean = clean.replace(/"/g, '""');
+        return `"${clean}"`;
+      });
+      return cells.join(',');
+    });
+    csvTables.push(rows.join('\r\n'));
+  }
+
+  return csvTables.length > 0 ? csvTables.join('\r\n\r\n') : null;
+}
+
 interface AssistantProps {
   isKeyboardOpen?: boolean;
 }
@@ -65,6 +125,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<{ index: number; type: 'sheet' | 'report'; message: string } | null>(null);
   const [showCompliance, setShowCompliance] = useState(true);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   
@@ -167,6 +228,41 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     } catch (e) {
       console.warn('Failed to copy to clipboard', e);
     }
+  };
+
+  const handleDownloadSheet = async (text: string, index: number) => {
+    const csv = extractMarkdownTablesAsCSV(text);
+    if (!csv) return;
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `hema_sheet_${dateStr}_${index + 1}.csv`;
+
+    const res = await exportAndSaveFile({
+      filename,
+      content: csv,
+      mimeType: 'text/csv',
+      title: 'Hema Financial Sheet'
+    });
+
+    setDownloadStatus({ index, type: 'sheet', message: res.success ? 'Saved Sheet!' : 'Failed' });
+    setTimeout(() => setDownloadStatus(null), 2500);
+  };
+
+  const handleDownloadReport = async (text: string, index: number) => {
+    if (!text) return;
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `hema_report_${dateStr}_${index + 1}.txt`;
+
+    const res = await exportAndSaveFile({
+      filename,
+      content: text,
+      mimeType: 'text/plain',
+      title: 'Hema Financial Report'
+    });
+
+    setDownloadStatus({ index, type: 'report', message: res.success ? 'Saved Doc!' : 'Failed' });
+    setTimeout(() => setDownloadStatus(null), 2500);
   };
 
   const handleConfirmClearChat = () => {
@@ -302,9 +398,9 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     },
     { 
       icon: Gift, 
-      title: 'చదివింపుల మర్యాద', 
-      desc: 'శుభకార్యాల ఆచారం', 
-      query: 'వివాహాలలో సాంప్రదాయ చదివింపులు మరియు బహుమతుల ఆచారం గురించి క్లుప్తంగా చెప్పండి.' 
+      title: 'చదివింపుల వివరాల షీట్', 
+      desc: 'బహుమతులు, పేర్లు & డౌన్‌లోడ్', 
+      query: 'నా గృహ చదివింపులు మరియు బహుమతుల వివరాలన్నింటినీ వ్యక్తుల పేర్లు, సందర్భం మరియు మొత్తాలతో కూడిన పట్టికగా రూపొందించండి.' 
     }
   ] : chatLanguage === 'hi' ? [
     { 
@@ -327,9 +423,9 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     },
     { 
       icon: Gift, 
-      title: 'शगुन की परंपरा', 
-      desc: 'शुभ कार्यों में लिफाफा नियम', 
-      query: 'शुभ कार्यों और शादियों में पारंपरिक शगुन के नियम और परंपरा संक्षेप में बताएं।' 
+      title: 'शगुन एवं उपहार शीट', 
+      desc: 'नामों व उपहारों की पूर्ण तालिका', 
+      query: 'मेरे सभी उपहारों और शगुन के लेन-देन को व्यक्तियों के नाम, अवसर और राशि सहित एक पूर्ण तालिका (शीट) के रूप में तैयार करें।' 
     }
   ] : [
     { 
@@ -352,9 +448,9 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     },
     { 
       icon: Gift, 
-      title: 'Traditional Gift Etiquette', 
-      desc: 'Reciprocal family etiquette (+₹1)', 
-      query: 'What is the traditional etiquette for reciprocal gifts at Indian family events?' 
+      title: 'Gifts & Shagun Sheet', 
+      desc: 'Download sheet of gifts & givers', 
+      query: 'Generate a complete table sheet of all gifts given and received with names, occasions, items, and amounts so I can download it.' 
     }
   ];
 
@@ -485,54 +581,101 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                 </p>
               </div>
             ) : (
-              <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-3.5 text-slate-800">
-                {/* Assistant Card Header */}
-                <div className="flex items-center justify-between border-b border-primary-100/70 pb-1.5 mb-2">
-                  <div className="flex items-center space-x-1.5">
-                    <div className="w-4 h-4 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
-                      <Sparkles size={10} />
-                    </div>
-                    <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
-                  </div>
+              (() => {
+                const hasTable = msg.text ? !!extractMarkdownTablesAsCSV(msg.text) : false;
+                return (
+                  <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-3.5 text-slate-800">
+                    {/* Assistant Card Header */}
+                    <div className="flex items-center justify-between border-b border-primary-100/70 pb-1.5 mb-2 gap-2">
+                      <div className="flex items-center space-x-1.5 shrink-0">
+                        <div className="w-4 h-4 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
+                          <Sparkles size={10} />
+                        </div>
+                        <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
+                      </div>
 
-                  {/* Copy Action */}
-                  {msg.text && (
-                    <button
-                      type="button"
-                      onClick={() => handleCopyMessage(msg.text, i)}
-                      className="flex items-center space-x-1 text-[10px] font-semibold text-slate-500 hover:text-primary-700 hover:bg-primary-50 px-2 py-0.5 rounded-md transition-colors"
-                      title="Copy response to clipboard"
-                    >
-                      {copiedIndex === i ? (
-                        <>
-                          <Check size={11} className="text-green-600" />
-                          <span className="text-green-700 font-bold">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={11} />
-                          <span>Copy</span>
-                        </>
+                      {/* Actions: Download Sheet (CSV), Download Report (Doc), Copy */}
+                      {msg.text && (
+                        <div className="flex items-center space-x-1 flex-wrap justify-end">
+                          {hasTable && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadSheet(msg.text, i)}
+                              className="flex items-center space-x-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300/80 px-2 py-0.5 rounded-md shadow-2xs transition-colors cursor-pointer"
+                              title="Download table as CSV spreadsheet (opens in Excel/Sheets)"
+                            >
+                              {downloadStatus?.index === i && downloadStatus?.type === 'sheet' ? (
+                                <>
+                                  <Check size={11} className="text-emerald-700" />
+                                  <span className="text-emerald-800 font-bold">{downloadStatus.message}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <FileSpreadsheet size={11} className="text-emerald-700" />
+                                  <span>Download Sheet (CSV)</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadReport(msg.text, i)}
+                            className="flex items-center space-x-1 text-[10px] font-semibold text-slate-600 hover:text-primary-700 hover:bg-primary-50 px-1.5 py-0.5 rounded-md transition-colors cursor-pointer"
+                            title="Download complete report or document"
+                          >
+                            {downloadStatus?.index === i && downloadStatus?.type === 'report' ? (
+                              <>
+                                <Check size={11} className="text-primary-700" />
+                                <span className="text-primary-800 font-bold">{downloadStatus.message}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Download size={11} />
+                                <span>Save Doc</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(msg.text, i)}
+                            className="flex items-center space-x-1 text-[10px] font-semibold text-slate-500 hover:text-primary-700 hover:bg-primary-50 px-1.5 py-0.5 rounded-md transition-colors cursor-pointer"
+                            title="Copy response to clipboard"
+                          >
+                            {copiedIndex === i ? (
+                              <>
+                                <Check size={11} className="text-green-600" />
+                                <span className="text-green-700 font-bold">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={11} />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       )}
-                    </button>
-                  )}
-                </div>
+                    </div>
 
-                {/* Formatted Markdown Body */}
-                {msg.text ? (
-                  <FormattedChatMessage
-                    content={msg.text}
-                    isStreaming={isTyping && i === messages.length - 1}
-                  />
-                ) : (
-                  <div className="flex items-center space-x-2 py-1 text-slate-500 text-xs">
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-150" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-300" />
-                    <span className="text-[11px] font-medium text-slate-500 ml-1">Formulating response...</span>
+                    {/* Formatted Markdown Body */}
+                    {msg.text ? (
+                      <FormattedChatMessage
+                        content={msg.text}
+                        isStreaming={isTyping && i === messages.length - 1}
+                      />
+                    ) : (
+                      <div className="flex items-center space-x-2 py-1 text-slate-500 text-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-150" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-primary-500 animate-bounce delay-300" />
+                        <span className="text-[11px] font-medium text-slate-500 ml-1">Formulating response...</span>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()
             )}
           </div>
         ))}

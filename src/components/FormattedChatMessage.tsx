@@ -99,14 +99,14 @@ export const FormattedChatMessage: React.FC<FormattedChatMessageProps> = memo(({
 
           // Tables
           table: ({ children }) => (
-            <div className="overflow-x-auto my-2.5 rounded-xl border border-primary-200/80 shadow-2xs bg-white">
-              <table className="w-full text-left text-xs divide-y divide-primary-100">
+            <div className="overflow-x-auto my-2.5 rounded-xl border border-primary-200/90 shadow-2xs bg-white">
+              <table className="w-full min-w-[340px] text-left text-xs divide-y divide-primary-100">
                 {children}
               </table>
             </div>
           ),
           thead: ({ children }) => (
-            <thead className="bg-primary-50/90 text-primary-950 font-bold">
+            <thead className="bg-primary-100/80 text-primary-950 font-extrabold border-b border-primary-200">
               {children}
             </thead>
           ),
@@ -115,13 +115,18 @@ export const FormattedChatMessage: React.FC<FormattedChatMessageProps> = memo(({
               {children}
             </tbody>
           ),
+          tr: ({ children }) => (
+            <tr className="hover:bg-primary-50/40 transition-colors odd:bg-white even:bg-slate-50/40">
+              {children}
+            </tr>
+          ),
           th: ({ children }) => (
-            <th className="px-3 py-1.5 text-[11px] font-bold text-primary-950 uppercase tracking-wider">
+            <th className="px-3 py-2 text-[10px] sm:text-[11px] font-extrabold text-primary-950 tracking-wide uppercase whitespace-nowrap">
               {children}
             </th>
           ),
           td: ({ children }) => (
-            <td className="px-3 py-1.5 text-xs text-slate-700 font-medium">
+            <td className="px-3 py-2 text-xs text-slate-800 font-medium whitespace-nowrap">
               {children}
             </td>
           ),

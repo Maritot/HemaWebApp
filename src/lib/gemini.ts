@@ -332,16 +332,14 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
     const pendingDebts = debts.filter(d => d.status !== 'SETTLED');
     const weOweList = pendingDebts.filter(d => d.type === 'WE_OWE');
     const owedToUsList = pendingDebts.filter(d => d.type === 'OWED_TO_US');
-    const totalWeOwe = weOweList.reduce((sum, d) => sum + (d.amount || d.principalAmount || 0), 0);
-    const totalOwedToUs = owedToUsList.reduce((sum, d) => sum + (d.amount || d.principalAmount || 0), 0);
-
-    const weOweDetails = weOweList.slice(0, 5).map(d => 
-      `${d.person}: ₹${(d.principalAmount || d.amount).toLocaleString('en-IN')} (Type: ${d.interestType || 'No Interest'}, Rate: ${d.interestRate ? d.interestRate + '%' : 'None'})`
-    ).join('; ');
-
-    const owedToUsDetails = owedToUsList.slice(0, 5).map(d => 
-      `${d.person}: ₹${(d.principalAmount || d.amount).toLocaleString('en-IN')} (Type: ${d.interestType || 'No Interest'}, Rate: ${d.interestRate ? d.interestRate + '%' : 'None'})`
-    ).join('; ');
+    const totalWeOwe = weOweList.reduce((sum, d) => {
+      const repaid = (d.payments || []).reduce((pSum, p) => pSum + p.amount, 0);
+      return sum + Math.max(0, (d.amount || d.principalAmount || 0) - repaid);
+    }, 0);
+    const totalOwedToUs = owedToUsList.reduce((sum, d) => {
+      const repaid = (d.payments || []).reduce((pSum, p) => pSum + p.amount, 0);
+      return sum + Math.max(0, (d.amount || d.principalAmount || 0) - repaid);
+    }, 0);
 
     // Gifts (Shagun)
     const giftsGiven = gifts.filter(g => g.type === 'GIVEN');
@@ -349,29 +347,87 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
     const totalGiftsGivenValue = giftsGiven.reduce((sum, g) => sum + (g.amount || 0), 0);
     const totalGiftsReceivedValue = giftsReceived.reduce((sum, g) => sum + (g.amount || 0), 0);
 
-    // Entity matching for person mentioned in query
-    const qLower = query.toLowerCase();
-    const mentionedPeople = people.filter(p => qLower.includes(p.name.toLowerCase()));
-    let personSpecificContext = '';
-    if (mentionedPeople.length > 0) {
-      const personInfo = mentionedPeople.map(p => {
-        const pDebts = debts.filter(d => d.person.toLowerCase() === p.name.toLowerCase());
-        const pGifts = gifts.filter(g => g.person.toLowerCase() === p.name.toLowerCase());
-        return `[Person Record: ${p.name} (${p.relationship || 'Contact'}) | Debts: ${pDebts.map(d => `${d.type}: ₹${d.amount} (${d.status})`).join(', ') || 'None'} | Shagun/Gifts: ${pGifts.map(g => `${g.type} ₹${g.amount} for ${g.occasion}`).join(', ') || 'None'}]`;
-      }).join('\n');
-      personSpecificContext = `\n[SPECIFIC PERSON RECORD MATCHES]:\n${personInfo}`;
-    }
+    // 1. People Directory
+    const peopleList = people.length > 0
+      ? people.map(p => `• Person: "${p.name}" | Relation: ${p.relationship || 'Contact'} | Phone: ${p.phone || 'N/A'}${p.notes ? ` | Notes: ${p.notes}` : ''}`).join('\n')
+      : 'None registered yet.';
+
+    // 2. Gifts Received
+    const formatGift = (g: any) => {
+      const dateStr = g.date ? new Date(g.date).toLocaleDateString('en-IN') : 'N/A';
+      const weightInfo = g.weightGrams ? `, ${g.weightGrams}g` : '';
+      const purityInfo = g.purity ? ` ${g.purity}` : '';
+      const itemDesc = `${g.item || 'Gift'} (${g.category || 'CASH'}${weightInfo}${purityInfo})`;
+      const notesStr = g.notes ? ` | Notes: ${g.notes}` : '';
+      return `• [${g.type === 'RECEIVED' ? 'RECEIVED FROM' : 'GIVEN TO'}] Person: "${g.person}" | Occasion: ${g.occasion} | Item: ${itemDesc} | Amount: ₹${(g.amount || 0).toLocaleString('en-IN')} | Date: ${dateStr}${notesStr}`;
+    };
+
+    const receivedGiftsFormatted = giftsReceived.length > 0
+      ? giftsReceived.map(formatGift).join('\n')
+      : 'None recorded yet.';
+
+    // 3. Gifts Given
+    const givenGiftsFormatted = giftsGiven.length > 0
+      ? giftsGiven.map(formatGift).join('\n')
+      : 'None recorded yet.';
+
+    // 4. Debts & Loans Complete Register
+    const formatDebt = (d: any) => {
+      const principal = d.principalAmount || d.amount || 0;
+      const totalDue = d.amount || d.principalAmount || 0;
+      const repaid = (d.payments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+      const balance = Math.max(0, totalDue - repaid);
+      const dueStr = d.dueDate ? new Date(d.dueDate).toLocaleDateString('en-IN') : 'N/A';
+      const typeStr = d.type === 'WE_OWE' ? 'WE OWE (Borrowing)' : 'OWED TO US (Lending)';
+      const termsStr = d.interestType && d.interestType !== 'NONE'
+        ? `${d.interestType}${d.interestRate ? ` (${d.interestRate}%)` : ''}`
+        : 'No Interest';
+      const notesStr = d.notes ? ` | Notes: ${d.notes}` : '';
+      return `• [${typeStr}] Person: "${d.person}" | Status: ${d.status} | Principal: ₹${principal.toLocaleString('en-IN')} | Total Due: ₹${totalDue.toLocaleString('en-IN')} | Repaid: ₹${repaid.toLocaleString('en-IN')} | Balance Remaining: ₹${balance.toLocaleString('en-IN')} | Terms: ${termsStr} | Due Date: ${dueStr}${notesStr}`;
+    };
+
+    const debtsFormatted = debts.length > 0
+      ? debts.map(formatDebt).join('\n')
+      : 'None recorded yet.';
+
+    // 5. Recent Transactions
+    const sortedTxs = [...txs].sort((a, b) => (b.date || 0) - (a.date || 0));
+    const txsFormatted = sortedTxs.length > 0
+      ? sortedTxs.slice(0, 50).map(t => {
+          const dateStr = t.date ? new Date(t.date).toLocaleDateString('en-IN') : 'N/A';
+          const labelStr = t.label ? ` (User Label: "${t.label}")` : '';
+          const notesStr = t.notes ? ` | Notes: ${t.notes}` : '';
+          return `• Date: ${dateStr} | Type: ${t.type} | Category: ${t.categoryId}${labelStr} | Amount: ₹${(t.amount || 0).toLocaleString('en-IN')}${notesStr}`;
+        }).join('\n')
+      : 'None recorded yet.';
 
     return `
-=== VERIFIED HOUSEHOLD FINANCIAL LEDGER (RAG CONTEXT) ===
+=== VERIFIED LIVE HOUSEHOLD FINANCIAL DATABASE (FULL RAG CONTEXT) ===
+[SUMMARY TOTALS]:
 • Total Recorded Household Income: ₹${totalIncome.toLocaleString('en-IN')}
 • Total Recorded Household Expenses: ₹${totalExpense.toLocaleString('en-IN')}
 • Net Cash Balance: ₹${netSavings.toLocaleString('en-IN')}
 • Top Expense Categories: ${topCategories || 'None recorded yet'}
-• Active Borrowings (We Owe): Total ₹${totalWeOwe.toLocaleString('en-IN')} (${weOweDetails || 'None'})
-• Active Lendings (Owed To Us): Total ₹${totalOwedToUs.toLocaleString('en-IN')} (${owedToUsDetails || 'None'})
-• Shagun & Gifts: Given ₹${totalGiftsGivenValue.toLocaleString('en-IN')} (${giftsGiven.length} gifts), Received ₹${totalGiftsReceivedValue.toLocaleString('en-IN')} (${giftsReceived.length} gifts)${personSpecificContext}
-=========================================================`;
+• Total Active Borrowings (We Owe): ₹${totalWeOwe.toLocaleString('en-IN')}
+• Total Active Lendings (Owed To Us): ₹${totalOwedToUs.toLocaleString('en-IN')}
+• Total Gifts Received: ${giftsReceived.length} items (Total ₹${totalGiftsReceivedValue.toLocaleString('en-IN')})
+• Total Gifts Given: ${giftsGiven.length} items (Total ₹${totalGiftsGivenValue.toLocaleString('en-IN')})
+
+[PEOPLE DIRECTORY (Family, Friends, Contacts)]:
+${peopleList}
+
+[GIFTS & SHAGUN REGISTRY - RECEIVED FROM PEOPLE]:
+${receivedGiftsFormatted}
+
+[GIFTS & SHAGUN REGISTRY - GIVEN TO PEOPLE]:
+${givenGiftsFormatted}
+
+[LOANS & DEBTS COMPLETE REGISTRY (Active & Settled)]:
+${debtsFormatted}
+
+[RECENT TRANSACTIONS LOG]:
+${txsFormatted}
+=====================================================================`;
   } catch (e) {
     return '';
   }
@@ -426,7 +482,25 @@ ${ragContext}
 ${languageDirective}
 
 CRITICAL ENTERPRISE GUARDRAILS & DOMAIN SCOPE (STRICTLY ENFORCED):
-1. STRICT FINANCIAL DOMAIN SCOPE (OUT-OF-DOMAIN REFUSAL):
+1. FULL DYNAMIC DATA ACCESS & SHEETS / REPORTS GENERATION:
+   - You have 100% COMPLETE, dynamic access to the user's real local household database provided in the RAG CONTEXT above:
+     * People Directory (family members, relatives, contacts, phone numbers).
+     * Complete Gifts & Shagun Ledger (exact names of all gift givers, gift recipients, occasions, items, gold/silver weights, values, and dates).
+     * Complete Loans & Debts Ledger (exact names of borrowers, lenders, principal amounts, interest rates, repayments made, balances remaining, due dates).
+     * Complete Transactions Log (income, expenses, custom user labels like Petrol, Groceries, Rent, amounts, dates).
+   - NEVER CLAIM THAT NAMES OR RECORDS ARE NOT STORED. You have every single gift giver, recipient, loan record, and transaction right in your context.
+   - When the user asks for a sheet, spreadsheet, table, report, words, summaries, or breakdown (e.g. "generate a sheet of gifts", "table of who gave gifts", "monthly expense report", "debt status sheet", "summary of who gave me gifts"):
+     * ALWAYS generate a well-structured, complete **Markdown Table** with clear columns and headers (\`| Col 1 | Col 2 | ... |\`).
+     * Gift Table Format:
+       | Person | Type | Occasion | Item & Details | Amount (₹) | Date |
+     * Debt / Loan Table Format:
+       | Person | Type | Principal | Terms | Repaid | Balance | Status | Due Date |
+     * Expense Table Format:
+       | Date | Category | Label / Description | Type | Amount (₹) |
+     * Include summary totals and key insights above or below the table.
+     * The app features an automatic one-click "Download Sheet (CSV)" button right on your response card, so keeping your markdown tables clean, complete, and valid allows the user to immediately download them into Excel or Google Sheets.
+
+2. STRICT FINANCIAL DOMAIN SCOPE (OUT-OF-DOMAIN REFUSAL):
    You are EXCLUSIVELY a personal & household finance assistant. You are PROHIBITED from answering non-financial questions, outer world knowledge, international politics (e.g., world leaders, prime ministers, elections), entertainment, sports, celebrity gossip, geography, general trivia, or school homework.
    - If the user asks ANY non-financial question (such as "Who is the prime minister of Australia", "Who won the match", "Tell me about actors/movies", "What is the capital of X"):
      You MUST POLITELY REFUSE and redirect them back to personal finances. DO NOT answer the outer question!
@@ -434,25 +508,25 @@ CRITICAL ENTERPRISE GUARDRAILS & DOMAIN SCOPE (STRICTLY ENFORCED):
      - Telugu Refusal: "క్షమించండి! నేను కేవలం మీ కుటుంబ ఆర్థిక విషయాలు, గృహ బడ్జెట్, బంగారం ధరలు, మరియు పొదుపులకు సంబంధించిన విషయాలలో మాత్రమే సహాయపడగలను. మీ గృహ ఆర్థిక నిర్వహణలో నేను మీకు ఎలా సహాయపడగలను?"
      - Hindi Refusal: "क्षमा करें! मैं केवल पारिवारिक वित्त, घरेलू बजट, सोने के भाव, ऋण और बचत से जुड़े प्रश्नों में आपकी सहायता कर सकती हूँ। मैं आपके पैसों के प्रबंधन या बजट में कैसे मदद करूँ?"
 
-2. NATURAL CONVERSATIONAL FLOW (NO ROBOTIC PREFIXES):
+3. NATURAL CONVERSATIONAL FLOW (NO ROBOTIC PREFIXES):
    - DO NOT repeat "Namaste!" or greetings at the start of every message in an ongoing conversation. Greet ONLY on the initial greeting or when greeted.
    - DO NOT prefix answers with formulaic "Topic: [Question]" headers. Dive directly into the answer naturally like a human financial advisor.
 
-3. GREETINGS RULE: When greeted (e.g. "Hi", "Hello", "నమస్కారం", "హలో", "Namaste"), reply in ONLY 1 to 2 warm, friendly sentences. NEVER output unprompted feature lists or tutorials.
+4. GREETINGS RULE: When greeted (e.g. "Hi", "Hello", "నమస్కారం", "హలో", "Namaste"), reply in ONLY 1 to 2 warm, friendly sentences. NEVER output unprompted feature lists or tutorials.
 
-4. STRICT BREVITY & CONCISENESS: Keep answers direct, punchy, and under 80-120 words. No repetitive introductory filler or concluding fluff. Answer the user's specific financial question immediately in the first sentence.
+5. DIRECT & PURPOSEFUL: For general advisory queries, keep answers punchy and concise (under 100-150 words). HOWEVER, when the user explicitly asks for a sheet, spreadsheet, table, report, full list, breakdown, or detailed summary, provide the COMPLETE table or report with all relevant items without artificial truncation.
 
-5. CLEAN STRUCTURED FORMATTING:
+6. CLEAN STRUCTURED FORMATTING:
    - Use bold titles (**Headline**) to organize key facts.
    - Use bullet points (* Item) for lists.
    - For Gold rates, interest calculations, or budgets, format into clean, compact bullet pairs (e.g. * **24K Gold:** ₹8,150/g | * **22K Gold:** ₹7,470/g).
    - Never output bare asterisks, broken formatting, or walls of dense text.
 
-6. REGULATORY & DISCLAIMER RULE: Keep any SEBI compliance note to a single subtle sentence at the end (e.g. *(Note: For educational household management only)*). Never generate lengthy legal paragraphs.
+7. REGULATORY & DISCLAIMER RULE: Keep any SEBI compliance note to a single subtle sentence at the end (e.g. *(Note: For educational household management only)*). Never generate lengthy legal paragraphs.
 
-7. FRAUD & SAFETY GUARDRAIL: If user mentions suspicious doubling schemes or sharing OTPs, warn them sternly to never share OTPs and report to cybercrime.gov.in (Helpline: 1930).
+8. FRAUD & SAFETY GUARDRAIL: If user mentions suspicious doubling schemes or sharing OTPs, warn them sternly to never share OTPs and report to cybercrime.gov.in (Helpline: 1930).
 
-8. INFORMAL VADDI RULE: For informal borrowings (e.g. ₹2 Vaddi = 2% per month / 24% annual), clearly calculate monthly interest and advise clearing high-interest debt first.`;
+9. INFORMAL VADDI RULE: For informal borrowings (e.g. ₹2 Vaddi = 2% per month / 24% annual), clearly calculate monthly interest and advise clearing high-interest debt first.`;
 }
 
 /**
@@ -578,7 +652,7 @@ export const queryGemini = async (
         contents,
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 400,
+          maxOutputTokens: 2048,
           thinkingConfig: {
             thinkingBudget: 0
           }
@@ -690,7 +764,7 @@ export const queryGeminiStream = async (
         contents,
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 400,
+          maxOutputTokens: 2048,
           thinkingConfig: {
             thinkingBudget: 0
           }
@@ -786,6 +860,117 @@ export const queryGeminiStream = async (
   return fallbackResult;
 };
 
+function parseGiftsFromRAG(ragContext: string, typeFilter?: 'RECEIVED' | 'GIVEN') {
+  const lines = ragContext.split('\n');
+  const results: Array<{
+    person: string;
+    type: string;
+    occasion: string;
+    item: string;
+    amount: string;
+    date: string;
+  }> = [];
+
+  for (const line of lines) {
+    if (line.includes('[RECEIVED FROM]') || line.includes('[GIVEN TO]')) {
+      const isReceived = line.includes('[RECEIVED FROM]');
+      if (typeFilter === 'RECEIVED' && !isReceived) continue;
+      if (typeFilter === 'GIVEN' && isReceived) continue;
+
+      const personMatch = line.match(/Person:\s*"([^"]+)"/);
+      const occasionMatch = line.match(/Occasion:\s*([^|]+)/);
+      const itemMatch = line.match(/Item:\s*([^|]+)/);
+      const amountMatch = line.match(/Amount:\s*([^|]+)/);
+      const dateMatch = line.match(/Date:\s*([^|]+)/);
+
+      if (personMatch) {
+        results.push({
+          person: personMatch[1].trim(),
+          type: isReceived ? 'Received' : 'Given',
+          occasion: occasionMatch ? occasionMatch[1].trim() : 'Event',
+          item: itemMatch ? itemMatch[1].trim() : 'Gift',
+          amount: amountMatch ? amountMatch[1].trim() : '₹0',
+          date: dateMatch ? dateMatch[1].trim() : 'N/A'
+        });
+      }
+    }
+  }
+  return results;
+}
+
+function parseDebtsFromRAG(ragContext: string) {
+  const lines = ragContext.split('\n');
+  const results: Array<{
+    person: string;
+    type: string;
+    status: string;
+    principal: string;
+    repaid: string;
+    balance: string;
+    terms: string;
+    dueDate: string;
+  }> = [];
+
+  for (const line of lines) {
+    if (line.includes('[WE OWE') || line.includes('[OWED TO US')) {
+      const isWeOwe = line.includes('[WE OWE');
+      const personMatch = line.match(/Person:\s*"([^"]+)"/);
+      const statusMatch = line.match(/Status:\s*([^|]+)/);
+      const principalMatch = line.match(/Principal:\s*([^|]+)/);
+      const repaidMatch = line.match(/Repaid:\s*([^|]+)/);
+      const balanceMatch = line.match(/Balance Remaining:\s*([^|]+)/);
+      const termsMatch = line.match(/Terms:\s*([^|]+)/);
+      const dueMatch = line.match(/Due Date:\s*([^|]+)/);
+
+      if (personMatch) {
+        results.push({
+          person: personMatch[1].trim(),
+          type: isWeOwe ? 'We Owe' : 'Owed to Us',
+          status: statusMatch ? statusMatch[1].trim() : 'PENDING',
+          principal: principalMatch ? principalMatch[1].trim() : '₹0',
+          repaid: repaidMatch ? repaidMatch[1].trim() : '₹0',
+          balance: balanceMatch ? balanceMatch[1].trim() : '₹0',
+          terms: termsMatch ? termsMatch[1].trim() : 'None',
+          dueDate: dueMatch ? dueMatch[1].trim() : 'N/A'
+        });
+      }
+    }
+  }
+  return results;
+}
+
+function parseTransactionsFromRAG(ragContext: string) {
+  const lines = ragContext.split('\n');
+  const results: Array<{
+    date: string;
+    type: string;
+    category: string;
+    amount: string;
+    notes: string;
+  }> = [];
+
+  for (const line of lines) {
+    if (line.startsWith('• Date:') && line.includes('| Type:')) {
+      const dateMatch = line.match(/Date:\s*([^|]+)/);
+      const typeMatch = line.match(/Type:\s*([^|]+)/);
+      const catMatch = line.match(/Category:\s*([^|]+)/);
+      const amountMatch = line.match(/Amount:\s*([^|]+)/);
+      const notesMatch = line.match(/Notes:\s*(.+)$/);
+
+      if (dateMatch && amountMatch) {
+        results.push({
+          date: dateMatch[1].trim(),
+          type: typeMatch ? typeMatch[1].trim() : 'EXPENSE',
+          category: catMatch ? catMatch[1].trim() : 'General',
+          amount: amountMatch[1].trim(),
+          notes: notesMatch ? notesMatch[1].trim() : ''
+        });
+      }
+    }
+  }
+  return results;
+}
+
 /**
  * Intelligent Local Ledger-Aware Fallback Engine
  * 100% deterministic, human-crafted financial wisdom in English, Hindi, and Telugu.
@@ -794,6 +979,55 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
   const q = query.toLowerCase();
   const isTe = chatLanguage.startsWith('te');
   const isHi = chatLanguage.startsWith('hi');
+
+  // 1. Gift & Shagun registry inquiries (who gave gifts, gift givers, gift sheet, gift table)
+  const isGiftQuery = q.includes('gift') || q.includes('shagun') || q.includes('wedding') || q.includes('చదివింపు') || q.includes('శగున్') || q.includes('उपहार');
+  const isSheetOrListOrWho = q.includes('who') || q.includes('giver') || q.includes('taker') || q.includes('name') || q.includes('sheet') || q.includes('table') || q.includes('list') || q.includes('report') || q.includes('summary') || q.includes('ఎవరు') || q.includes('ఎవరికి') || q.includes('ఎవరు ఇచ్చారు') || q.includes('किसने');
+
+  if (isGiftQuery && isSheetOrListOrWho) {
+    const filter = (q.includes('given to') || q.includes('we gave') || q.includes('ఇచ్చిన') || q.includes('दिए')) ? 'GIVEN' : (q.includes('who gave') || q.includes('received') || q.includes('వచ్చిన') || q.includes('మిలే')) ? 'RECEIVED' : undefined;
+    const gifts = parseGiftsFromRAG(ragContext, filter);
+    if (gifts.length > 0) {
+      if (isTe) {
+        const rows = gifts.map(g => `| **${g.person}** | ${g.type === 'Received' ? 'వచ్చినవి' : 'ఇచ్చినవి'} | ${g.occasion} | ${g.item} | ${g.amount} | ${g.date} |`).join('\n');
+        return `🎁 **గృహ చదివింపులు & బహుమతుల వివరాల షీట్:**\n\n| పేరు | రకం | సందర్భం | కానుక వివరాలు | విలువ | తేదీ |\n|:---|:---:|:---|:---|---:|:---:|\n${rows}\n\n*(గమనిక: పైనున్న **"Download Sheet (CSV)"** బటన్ క్లిక్ చేసి ఈ షీట్‌ను నేరుగా డౌన్‌లోడ్ చేసుకోవచ్చు).*`;
+      }
+      if (isHi) {
+        const rows = gifts.map(g => `| **${g.person}** | ${g.type === 'Received' ? 'मिला' : 'दिया'} | ${g.occasion} | ${g.item} | ${g.amount} | ${g.date} |`).join('\n');
+        return `🎁 **घरेलू उपहार एवं शगुन विवरण शीट:**\n\n| व्यक्ति | प्रकार | अवसर | उपहार विवरण | राशि | दिनांक |\n|:---|:---:|:---|:---|---:|:---:|\n${rows}\n\n*(सुझाव: ऊपर दिए गए **"Download Sheet (CSV)"** बटन से इसे सीधे एक्सेल शीट के रूप में डाउनलोड कर सकते हैं).*`;
+      }
+      const rows = gifts.map(g => `| **${g.person}** | ${g.type} | ${g.occasion} | ${g.item} | ${g.amount} | ${g.date} |`).join('\n');
+      return `🎁 **Household Gift Registry Sheet (Gift Givers & Receivers):**\n\n| Person | Type | Occasion | Item & Details | Amount | Date |\n|:---|:---:|:---|:---|---:|:---:|\n${rows}\n\n*(Tip: Tap the **"Download Sheet (CSV)"** button above to export this directly to your phone as an Excel-compatible spreadsheet).*`;
+    }
+  }
+
+  // 2. Debt / Loan queries (who owes us, who we owe, loan sheet, debt table)
+  const isDebtQuery = q.includes('debt') || q.includes('loan') || q.includes('owe') || q.includes('vaddi') || q.includes('interest') || q.includes('అప్పు') || q.includes('వడ్డీ') || q.includes('కర్జ్') || q.includes('उधार');
+  if (isDebtQuery && isSheetOrListOrWho) {
+    const debts = parseDebtsFromRAG(ragContext);
+    if (debts.length > 0) {
+      if (isTe) {
+        const rows = debts.map(d => `| **${d.person}** | ${d.type === 'We Owe' ? 'మనం ఇవ్వాలి' : 'మనకు రావాలి'} | ${d.principal} | ${d.terms} | ${d.repaid} | ${d.balance} | ${d.status} | ${d.dueDate} |`).join('\n');
+        return `📊 **అప్పులు & లోన్ల వివరాల షీట్:**\n\n| వ్యక్తి | రకం | అసలు | షరతులు | చెల్లించినది | బ్యాలెన్స్ | స్థితి | గడువు తేదీ |\n|:---|:---:|---:|:---:|---:|---:|:---:|:---:|\n${rows}\n\n*(గమనిక: పైనున్న **"Download Sheet (CSV)"** బటన్ ద్వారా ఎక్సెల్ షీట్ డౌన్‌లోడ్ చేసుకోండి).*`;
+      }
+      if (isHi) {
+        const rows = debts.map(d => `| **${d.person}** | ${d.type === 'We Owe' ? 'देना है' : 'लेना है'} | ${d.principal} | ${d.terms} | ${d.repaid} | ${d.balance} | ${d.status} | ${d.dueDate} |`).join('\n');
+        return `📊 **घरेलू ऋण एवं उधारी विवरण शीट:**\n\n| व्यक्ति | प्रकार | मूलधन | ब्याज शर्तें | चुकाया | शेष बकाया | स्थिति | देय तिथि |\n|:---|:---:|---:|:---:|---:|---:|:---:|:---:|\n${rows}\n\n*(सुझाव: ऊपर दिए गए **"Download Sheet (CSV)"** बटन से इसे सीधे एक्सेल शीट के रूप में डाउनलोड कर सकते हैं).*`;
+      }
+      const rows = debts.map(d => `| **${d.person}** | ${d.type} | ${d.principal} | ${d.terms} | ${d.repaid} | ${d.balance} | ${d.status} | ${d.dueDate} |`).join('\n');
+      return `📊 **Household Loans & Debts Sheet:**\n\n| Person | Type | Principal | Terms | Repaid | Balance | Status | Due Date |\n|:---|:---:|---:|:---:|---:|---:|:---:|:---:|\n${rows}\n\n*(Tip: Tap the **"Download Sheet (CSV)"** button above to export this directly to your phone as an Excel-compatible spreadsheet).*`;
+    }
+  }
+
+  // 3. Transactions / Expense report queries
+  const isTxQuery = (q.includes('expense') || q.includes('spend') || q.includes('transaction') || q.includes('ఖర్చు') || q.includes('खर्च')) && (q.includes('sheet') || q.includes('table') || q.includes('report') || q.includes('list') || q.includes('summary'));
+  if (isTxQuery) {
+    const txs = parseTransactionsFromRAG(ragContext);
+    if (txs.length > 0) {
+      const rows = txs.slice(0, 20).map(t => `| ${t.date} | ${t.type} | ${t.category} | ${t.amount} | ${t.notes || '-'} |`).join('\n');
+      return `📑 **Household Expenses & Transactions Log:**\n\n| Date | Type | Category | Amount | Notes |\n|:---:|:---:|:---|---:|:---|\n${rows}\n\n*(Tip: Tap the **"Download Sheet (CSV)"** button above to export this spreadsheet).*`;
+    }
+  }
 
   // IPO, Stocks & Shares
   if (q.includes('ipo') || q.includes('share') || q.includes('stock') || q.includes('market') || q.includes('సెక్యూరిటీలు') || q.includes('షేర్లు') || q.includes('शेयर')) {
