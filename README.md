@@ -1,93 +1,68 @@
-# Hema Finance Web App (Prototype)
+# Hema Finance (హేమ / हेमा) — Production PWA & Android Mobile App
+
+> **Comprehensive Project Memory & Architectural Blueprint:** See [PROJECT_CONTEXT.md](file:///C:/Users/LAB2_PC14/Desktop/TharunAvula/HemaWebApp/PROJECT_CONTEXT.md) for the single authoritative specification, system architecture, database schemas, cryptographic security model, and development roadmap.
+
+---
 
 ## Overview
-This repository contains a **web‑first** implementation of the **Hema** household finance manager. It uses a completely different tech stack from the previous native Android version and is built with modern web technologies that can later be wrapped into a mobile app using **Capacitor** (for a PWA‑style Android app) or **React Native**.
+**Hema Finance** is a 100% offline-first, vernacular-enabled personal and household finance management application designed specifically for Indian household elders, parents, and joint families. It provides informal credit and ₹ Vaddi interest management, traditional Gold (Tola / Savaran) and Shagun gift tracking, multi-user authentication with physical database isolation (`HemaDB_${userId}`), dynamic Google Gemini AI assistance with live household RAG metrics, and executive corporate PDF & Excel reports.
 
-## Tech Stack
-| Layer | Technology |
-|-------|------------|
-| **Frontend** | React 18 + TypeScript, Vite (dev server & bundler), Tailwind CSS, React‑Router, i18next for localisation, **Web Speech API** for voice input, IndexedDB (via `idb`) for offline storage |
-| **Backend (optional)** | Node.js + Express, SQLite (via `better-sqlite3`) – can run locally or be replaced by any serverless API (e.g., Supabase, Firebase Functions) |
-| **State Management** | React Context + `useReducer` (lightweight) |
-| **Testing** | Vitest + React Testing Library |
-| **Production Build** | Vite builds static assets; can be served by any static web server (NGINX, Vercel, Netlify) |
-| **Mobile conversion** | **Capacitor** (generates native Android project from the web app) – later you can also migrate UI to **React Native** if you want a fully native experience |
+Built with **React 18, TypeScript, Tailwind CSS**, and packaged natively for Android via **Capacitor 8**.
 
-## Project Structure
-```
-HemaWebApp/
-├─ public/
-│   └─ index.html                # HTML template
-├─ src/
-│   ├─ assets/                    # images, icons
-│   ├─ components/                # reusable UI components (Cards, Buttons, etc.)
-│   ├─ pages/                     # one page per app pillar (Dashboard, Expenses, Debts, Gifts, Assistant, Settings)
-│   ├─ locales/                   # i18n JSON files per language (en, hi, te, mr, kn, bn, gu)
-│   ├─ hooks/                     # custom hooks (useVoice, useIndexedDB, useAlerts)
-│   ├─ lib/                       # utilities (auto‑correct, fuzzy matcher)
-│   ├─ App.tsx                    # root component with routing & layout
-│   ├─ main.tsx                   # React entry point
-│   ├─ i18n.ts                    # i18next init
-│   └─ index.css                  # Tailwind imports
-├─ server/                         # optional Express backend
-│   ├─ db/                         # SQLite DB & migrations
-│   └─ index.js                    # API server
-├─ tailwind.config.cjs
-├─ tsconfig.json
-├─ vite.config.ts
-├─ package.json
-└─ README.md
+---
+
+## Core Capabilities
+- 🔐 **Dual-Tier Multi-User Authentication:** Online Express REST backend + offline cryptographic vault fallback using W3C WebCrypto PBKDF2-SHA256 (100,000 iterations). 1-tap account switching on shared devices.
+- 🗄️ **Physical Tenant Partitioning:** Each user account operates in a completely separate IndexedDB partition (`HemaDB_${userId}`).
+- 💰 **Informal Credit & ₹ Vaddi Engine:** Indian monthly ₹ vaddi interest, 3-column settled reconciliation (Principal, Interest, Total), camera proof with verified GPS watermark, and future-date prevention.
+- 🎁 **Shagun & Gift Registry:** People cards, relationship tracking, cash, gold (grams to tola conversion with 22K/24K purity), silver, and festive silk saree ledgers.
+- 🤖 **Dynamic Gemini AI Assistant:** Real-time dynamic RAG data injection with live household metrics, language guardrails (EN, TE, HI), and ChatGPT-style document artifact cards.
+- 📊 **Executive Corporate Reports:** Vector PDF generation (`jspdf` + `jspdf-autotable`) and styled corporate Excel workbooks (`xlsx-js-style`) with cleaned headers and custom column widths.
+- 📱 **Native Android Integration:** Lively camera capture, local notifications tray alerts, native filesystem writes, and Android Share Sheet integration.
+- 💾 **Full Ledger Backup & Restore:** 1-click JSON backup export and schema-validated restore with built-in test ledger loader.
+
+---
+
+## Quickstart
+
+### 1. Installation
+```bash
+# Windows (cmd.exe recommended to bypass PowerShell script execution policy)
+cmd.exe /c "npm install"
 ```
 
-## Getting Started (Web)
-1. **Install Node.js** (v20+ recommended).
-2. Open a terminal and run:
-   ```bash
-   cd "C:/Users/LAB2_PC14/Desktop/TharunAvula/HemaWebApp"
-   npm install
-   npm run dev   # starts Vite dev server at http://localhost:5173
-   ```
-3. The app will load with the **English** UI by default. Use the language picker in Settings to switch to any of the supported Indian languages.
+### 2. Run Development Frontend
+```bash
+cmd.exe /c "npm run dev"
+```
+*Vite dev server runs at:* `http://localhost:5173/`
 
-## Offline‑First
-- All CRUD operations (add expense, record gift, etc.) are persisted in **IndexedDB** using the `idb` library. The UI updates instantly and a background sync worker queues changes to be sent to the backend when connectivity is restored.
-- Service Worker (generated by Vite PWA plugin) caches static assets and provides a fallback offline page.
+### 3. Run Multi-Tenant Express Backend (Optional)
+```bash
+cmd.exe /c "npm run server"
+```
+*Express server runs at:* `http://localhost:3001/`
 
-## Voice Input & AI Assistant
-- The **Web Speech API** is used for Speech‑to‑Text (offline for supported browsers, otherwise falls back to Google Cloud Speech via a tiny proxy server).
-- Text‑to‑Speech uses the native `speechSynthesis` API.
-- The AI assistant communicates with a configurable LLM endpoint (e.g., Gemini, Claude) through a simple wrapper (`assistantApi.ts`). The response includes a compliance disclaimer that is displayed as a banner.
+### 4. Build Production Web Distribution
+```bash
+cmd.exe /c "npm run build"
+```
+*Outputs to:* `dist/`
 
-## Internationalisation
-- All visible strings are stored in `src/locales/<lang>/translation.json`. The `i18next` library loads the correct file based on the user’s selected language. Dates, numbers, and currency are formatted using `Intl.NumberFormat` with the appropriate locale.
-- Section identifiers remain in **English** (e.g., `dashboard`, `expenses`) and are mapped to localized UI labels at runtime.
+### 5. Compile Android APK & Play Store Bundle
+```powershell
+cmd.exe /c "npx cap sync android"
+$env:JAVA_HOME = "C:\Program Files\Autopsy-4.22.1\jre"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+cd android
+.\gradlew.bat assembleRelease bundleRelease
+cd ..
+```
+*Output Artifacts:*
+- `Hema_v2.0_Release.apk` (7.62 MB)
+- `android/app/build/outputs/apk/release/app-release.apk`
+- `android/app/build/outputs/bundle/release/app-release.aab`
 
-## Mobile App Conversion (Future)
-When you are ready to ship on Android:
-1. Install Capacitor:
-   ```bash
-   npm install @capacitor/core @capacitor/cli
-   npx cap init Hema com.hema.app
-   ```
-2. Add Android platform:
-   ```bash
-   npx cap add android
-   ```
-3. Build the web assets and sync them:
-   ```bash
-   npm run build   # generates dist/
-   npx cap copy android
-   npx cap open android   # opens Android Studio project
-   ```
-4. From Android Studio you can generate a signed APK/AAB and publish to the Play Store.
+---
 
-> **Tip:** If you later decide to move to a fully native UI, you can reuse most of the business logic (auto‑correct, nudge engine) as a separate TypeScript/JavaScript module and call it from React Native via the JSI bridge.
-
-## Next Steps
-- Implement the UI pages listed in `src/pages/` (Dashboard, Expenses, Debts, Gifts, Assistant, Settings).
-- Add the **auto‑correct** engine (`src/lib/AutoCorrectEngine.ts`) that uses Levenshtein distance to fix user‑typed categories.
-- Wire up the **alert evaluation** logic (`src/hooks/useAlerts.ts`) to schedule notifications via the Service Worker.
-- Set up the **Express backend** (optional) for data sync and LLM proxy.
-- Write unit tests for critical utilities.
-
-Feel free to adjust the folder name or stack details. Let me know if you’d like any of the initial source files generated now (e.g., `package.json`, `vite.config.ts`, a starter React component, etc.).
+## Documentation
+For complete technical details, database schemas, cryptographic specifications, and operational instructions, please consult **[PROJECT_CONTEXT.md](file:///C:/Users/LAB2_PC14/Desktop/TharunAvula/HemaWebApp/PROJECT_CONTEXT.md)**.
