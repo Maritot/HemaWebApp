@@ -1,13 +1,27 @@
 /**
  * Hema Executive Document & Spreadsheet Exporter
- * Generates ChatGPT-quality standalone formatted HTML documents and Excel-ready CSV spreadsheets.
+ * Generates:
+ * 1. Professional PDF Reports (.pdf) using jsPDF & autoTable with executive corporate layout.
+ * 2. Formatted Excel Workbooks (.xlsx) using xlsx-js-style with styled headers, custom column widths, and no rogue symbols.
  */
+
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import XLSX from 'xlsx-js-style';
 
 export interface DocumentMetadata {
   title: string;
   filenameBase: string;
   rowCount: number;
   hasTable: boolean;
+  totalAmountText?: string;
+}
+
+export interface ParsedMarkdownReport {
+  tableHeaders: string[];
+  tableRows: string[][];
+  summaryPoints: string[];
+  introText: string;
   totalAmountText?: string;
 }
 
@@ -26,7 +40,7 @@ export function isDocumentOrSheetRequested(userPrompt?: string, assistantText?: 
 
   // Check user prompt keywords
   const prompt = (userPrompt || '').toLowerCase();
-  const docKeywords = /(sheet|spreadsheet|csv|excel|document|doc|report|table|statement|export|download|list|names|who|givers|takers|breakdown|summary|details|జాబితా|షీట్|పట్టిక|రికార్డు|పేర్లు|ఎవరు|వివరాలు|तालिका|शीट|दस्तावेज|रिपोर्ट|नाम|किसने|विवरण)/i;
+  const docKeywords = /(pdf|sheet|spreadsheet|csv|excel|xlsx|document|doc|report|table|statement|export|download|list|names|who|givers|takers|breakdown|summary|details|జాబితా|షీట్|పట్టిక|రికార్డు|పేర్లు|ఎవరు|వివరాలు|तालिका|शीट|दस्तावेज|रिपोर्ट|नाम|किसने|विवरण)/i;
 
   return docKeywords.test(prompt) || prompt.length === 0;
 }
@@ -39,7 +53,7 @@ export function extractDocumentMetadata(assistantText: string, defaultTitle: str
   let rowCount = 0;
 
   // Try finding headline in text (e.g. **Gifts & Shagun Registry** or # Gifts)
-  const boldHeaderMatch = assistantText.match(/\*\*([^*]+(Registry|Report|Ledger|Sheet|Summary|Gifts|Debts|Expenses|Overview)[^*]*)\*\*/i);
+  const boldHeaderMatch = assistantText.match(/\*\*([^*]+(Registry|Report|Ledger|Sheet|Summary|Gifts|Debts|Expenses|Overview|Statement|Transactions)[^*]*)\*\*/i);
   if (boldHeaderMatch) {
     title = boldHeaderMatch[1].trim();
   } else {
@@ -75,492 +89,502 @@ export function extractDocumentMetadata(assistantText: string, defaultTitle: str
 }
 
 /**
- * Converts Markdown table(s) embedded in text into clean, Excel-compatible CSV.
- * Crucially includes UTF-8 BOM (\uFEFF) so Microsoft Excel opens it with correct Rupee and Indian characters.
+ * Cleans header cells by removing rogue characters, BOM, quotes, and standardizing currency labels
  */
-export function extractMarkdownTablesAsCSV(markdown: string): string | null {
-  if (!markdown || !markdown.includes('|')) return null;
+export function cleanHeaderLabel(rawHeader: string): string {
+  let clean = rawHeader
+    .replace(/^[\uFEFF"'\s]+|["'\s]+$/g, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1');
 
-  const lines = markdown.split('\n');
-  const csvTables: string[] = [];
-  let currentTableLines: string[] = [];
-  let inTable = false;
+  // Replace any corrupted unicode symbols like â□¹ or ₹ with clean standard text
+  clean = clean.replace(/[\(（]?\s*â□¹\s*[\)）]?/gi, ' (INR)');
+  clean = clean.replace(/[\(（]?\s*₹\s*[\)）]?/gi, ' (INR)');
+  clean = clean.replace(/[\(（]?\s*Rs\.?\s*[\)）]?/gi, ' (INR)');
+  
+  // Strip any lingering quotation marks
+  clean = clean.replace(/"/g, '').trim();
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      const isDelimiter = /^\|[\s\-:|]+\|$/.test(trimmed);
-      if (!isDelimiter) {
-        currentTableLines.push(trimmed);
-      }
-      inTable = true;
-    } else {
-      if (inTable && currentTableLines.length > 0) {
-        const rows = currentTableLines.map(row => {
-          const cells = row.split('|').slice(1, -1).map(c => {
-            let clean = c.trim()
-              .replace(/\*\*([^*]+)\*\*/g, '$1')
-              .replace(/\*([^*]+)\*/g, '$1')
-              .replace(/`([^`]+)`/g, '$1');
-            clean = clean.replace(/"/g, '""');
-            return `"${clean}"`;
-          });
-          return cells.join(',');
-        });
-        csvTables.push(rows.join('\r\n'));
-        currentTableLines = [];
-      }
-      inTable = false;
-    }
-  }
+  // Normalize common column names
+  if (/^person$/i.test(clean)) return 'Person';
+  if (/^type$/i.test(clean)) return 'Type';
+  if (/^occasion$/i.test(clean)) return 'Occasion';
+  if (/^item.*details$/i.test(clean)) return 'Item & Details';
+  if (/^amount.*inr$/i.test(clean)) return 'Amount (INR)';
+  if (/^date$/i.test(clean)) return 'Date';
+  if (/^category$/i.test(clean)) return 'Category';
+  if (/^notes?$/i.test(clean)) return 'Notes';
 
-  if (inTable && currentTableLines.length > 0) {
-    const rows = currentTableLines.map(row => {
-      const cells = row.split('|').slice(1, -1).map(c => {
-        let clean = c.trim()
-          .replace(/\*\*([^*]+)\*\*/g, '$1')
-          .replace(/\*([^*]+)\*/g, '$1')
-          .replace(/`([^`]+)`/g, '$1');
-        clean = clean.replace(/"/g, '""');
-        return `"${clean}"`;
-      });
-      return cells.join(',');
-    });
-    csvTables.push(rows.join('\r\n'));
-  }
-
-  if (csvTables.length === 0) return null;
-
-  // Prepend UTF-8 BOM so Excel opens with proper UTF-8 decoding
-  return '\uFEFF' + csvTables.join('\r\n\r\n');
+  return clean;
 }
 
 /**
- * Generates an executive, styled HTML document from the assistant's markdown response.
- * Looks like a professionally formatted report that can be opened in any browser, Word, Google Docs,
- * or printed directly to PDF on mobile or desktop.
+ * Parses markdown report text into structured components: headers, rows, summary insights, intro
  */
-export function generateExecutiveHtmlDocument(markdownText: string, metadata?: DocumentMetadata): string {
+export function parseMarkdownReport(text: string): ParsedMarkdownReport {
+  const lines = text.split('\n');
+  const tableHeaders: string[] = [];
+  const tableRows: string[][] = [];
+  const summaryPoints: string[] = [];
+  const introLines: string[] = [];
+  let inTable = false;
+  let inSummary = false;
+  let totalAmountText: string | undefined;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Table rows
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      const isDelimiter = /^\|[\s\-:|]+\|$/.test(trimmed);
+      if (isDelimiter) continue;
+
+      const cells = trimmed.split('|').slice(1, -1).map(c => {
+        return c.trim()
+          .replace(/^[\uFEFF"'\s]+|["'\s]+$/g, '')
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/\*([^*]+)\*/g, '$1')
+          .replace(/`([^`]+)`/g, '$1');
+      });
+
+      if (!inTable) {
+        // First row is headers
+        cells.forEach(h => {
+          tableHeaders.push(cleanHeaderLabel(h));
+        });
+        inTable = true;
+      } else {
+        tableRows.push(cells);
+      }
+      continue;
+    }
+
+    if (inTable) {
+      inTable = false;
+    }
+
+    // Summary heading detection
+    if (/summary|insights|notes|key points|findings/i.test(trimmed)) {
+      inSummary = true;
+      continue;
+    }
+
+    // Bullet points
+    if (trimmed.startsWith('* ') || trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
+      const point = trimmed
+        .replace(/^[\*\-•]\s+/, '')
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\*([^*]+)\*/g, '$1')
+        .replace(/â□¹/g, 'Rs. ')
+        .replace(/₹/g, 'Rs. ');
+
+      if (/total.*value|total.*amount/i.test(point)) {
+        totalAmountText = point;
+      }
+      summaryPoints.push(point);
+      continue;
+    }
+
+    // Intro / narrative text
+    if (!inSummary && !trimmed.startsWith('(') && !trimmed.startsWith('#')) {
+      introLines.push(
+        trimmed
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/\*([^*]+)\*/g, '$1')
+          .replace(/â□¹/g, 'Rs. ')
+          .replace(/₹/g, 'Rs. ')
+      );
+    }
+  }
+
+  return {
+    tableHeaders,
+    tableRows,
+    summaryPoints,
+    introText: introLines.slice(0, 3).join(' '),
+    totalAmountText
+  };
+}
+
+/**
+ * 1. PROFESSIONAL EXCEL GENERATOR (.xlsx)
+ * Generates an executive Microsoft Excel (.xlsx) workbook using xlsx-js-style.
+ * - Headers: Deep Slate/Navy (#0F172A) fill, bold white font, amber accent bottom border.
+ * - Columns: Widths calculated to fit content, proper text/number alignment.
+ * - Data: Real numeric values for amounts with '#,##0' currency formatting, alternating zebra rows (#F8FAFC).
+ * - Zero rogue characters, no BOM glitches, no corrupted symbols.
+ */
+export function generateExecutiveExcelWorkbook(
+  markdownText: string,
+  metadata?: DocumentMetadata
+): { base64: string; filename: string; mimeType: string } {
   const meta = metadata || extractDocumentMetadata(markdownText);
+  const parsed = parseMarkdownReport(markdownText);
+
+  const headers = parsed.tableHeaders.length > 0
+    ? parsed.tableHeaders
+    : ['Item', 'Details', 'Amount (INR)', 'Date'];
+
+  // Identify column indices for alignment & number formats
+  const amountColIdx = headers.findIndex(h => /amount|value|price|cost|balance|interest/i.test(h));
+  const dateColIdx = headers.findIndex(h => /date|day|time/i.test(h));
+  const typeColIdx = headers.findIndex(h => /type|status|mode|relation/i.test(h));
+
+  const wb = XLSX.utils.book_new();
+
+  // Prepare raw table data
+  const aoaData: any[][] = [headers];
+
+  for (const row of parsed.tableRows) {
+    const formattedRow: any[] = [];
+    for (let c = 0; c < headers.length; c++) {
+      const cellText = row[c] || '';
+      
+      // If this is the amount column or contains pure numeric data
+      const cleanCandidate = cellText.replace(/[₹$€£Rs.\s]/gi, '').replace(/,/g, '').trim();
+      if (/^-?\d+(\.\d+)?$/.test(cleanCandidate)) {
+        const num = Number(cleanCandidate);
+        formattedRow.push(isNaN(num) ? cellText : num);
+      } else {
+        formattedRow.push(cellText);
+      }
+    }
+    aoaData.push(formattedRow);
+  }
+
+  // Create sheet
+  const ws = XLSX.utils.aoa_to_sheet(aoaData);
+
+  // Calculate dynamic column widths (min 14, max 45)
+  const colWidths = headers.map((h, colIdx) => {
+    let maxLen = h.length;
+    for (const r of parsed.tableRows) {
+      const val = String(r[colIdx] || '');
+      if (val.length > maxLen) {
+        maxLen = val.length;
+      }
+    }
+    return Math.min(Math.max(maxLen + 4, 14), 45);
+  });
+  ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
+  // Style Header Cells
+  for (let c = 0; c < headers.length; c++) {
+    const cellRef = XLSX.utils.encode_cell({ r: 0, c });
+    if (ws[cellRef]) {
+      ws[cellRef].s = {
+        font: { name: 'Calibri', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '0F172A' } }, // Deep Navy / Slate 900
+        alignment: {
+          vertical: 'center',
+          horizontal: c === amountColIdx ? 'right' : (c === dateColIdx || c === typeColIdx ? 'center' : 'left'),
+          wrapText: true
+        },
+        border: {
+          bottom: { style: 'medium', color: { rgb: 'D97706' } }, // Amber 600
+          top: { style: 'thin', color: { rgb: '0F172A' } },
+          left: { style: 'thin', color: { rgb: '1E293B' } },
+          right: { style: 'thin', color: { rgb: '1E293B' } }
+        }
+      };
+    }
+  }
+
+  // Style Data Rows
+  const rowCount = parsed.tableRows.length;
+  for (let r = 1; r <= rowCount; r++) {
+    const isEven = r % 2 === 0;
+    for (let c = 0; c < headers.length; c++) {
+      const cellRef = XLSX.utils.encode_cell({ r, c });
+      if (ws[cellRef]) {
+        const isNum = typeof ws[cellRef].v === 'number';
+        const isDateOrType = c === dateColIdx || c === typeColIdx;
+
+        ws[cellRef].s = {
+          font: { name: 'Calibri', sz: 10, color: { rgb: '1E293B' } },
+          fill: { fgColor: { rgb: isEven ? 'F8FAFC' : 'FFFFFF' } },
+          alignment: {
+            vertical: 'center',
+            horizontal: isNum || c === amountColIdx ? 'right' : (isDateOrType ? 'center' : 'left'),
+            wrapText: true
+          },
+          border: {
+            top: { style: 'thin', color: { rgb: 'E2E8F0' } },
+            bottom: { style: 'thin', color: { rgb: 'E2E8F0' } },
+            left: { style: 'thin', color: { rgb: 'E2E8F0' } },
+            right: { style: 'thin', color: { rgb: 'E2E8F0' } }
+          }
+        };
+
+        if (isNum) {
+          ws[cellRef].z = '#,##0';
+        }
+      }
+    }
+  }
+
+  // Safe sheet name (max 31 characters)
+  const safeSheetName = meta.title.replace(/[\\/?*[\]]/g, '').slice(0, 30) || 'Ledger';
+  XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+
+  // Write base64 workbook
+  const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+  const filename = `${meta.filenameBase}.xlsx`;
+  const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  return { base64, filename, mimeType };
+}
+
+/**
+ * 2. PROFESSIONAL PDF REPORT GENERATOR (.pdf)
+ * Generates an executive PDF report using jsPDF and autoTable.
+ * Follows formal corporate document conventions:
+ * - Deep navy executive banner (#0F172A) with gold accent line (#D97706)
+ * - Formal document title, timestamp, and audit metadata strip
+ * - High-contrast data tables with navy headers, bold amounts, alternating zebra rows
+ * - Executive summary insights callout box with gold accent bar
+ * - Confidentiality notice and running page numbers (Page X of Y)
+ */
+export function generateExecutivePdfDocument(
+  markdownText: string,
+  metadata?: DocumentMetadata
+): { base64: string; filename: string; mimeType: string } {
+  const meta = metadata || extractDocumentMetadata(markdownText);
+  const parsed = parseMarkdownReport(markdownText);
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
   const now = new Date();
   const formattedDate = now.toLocaleDateString('en-IN', {
     day: 'numeric',
-    month: 'long',
+    month: 'short',
     year: 'numeric'
   });
   const formattedTime = now.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit'
   });
+  const timestampStr = `${formattedDate} · ${formattedTime}`;
 
-  // Convert markdown to clean HTML
-  const lines = markdownText.split('\n');
-  const htmlParts: string[] = [];
-  let inTable = false;
-  let tableHeaderParsed = false;
-  let inList = false;
+  // 1. Executive Navy Header Banner (0 to 30mm)
+  doc.setFillColor(15, 23, 42); // Navy / Slate 900
+  doc.rect(0, 0, 210, 30, 'F');
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
+  // Gold accent rule (height 2mm)
+  doc.setFillColor(217, 119, 6); // Gold / Amber 600
+  doc.rect(0, 30, 210, 2, 'F');
 
-    // Table rows
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      const isDelimiter = /^\|[\s\-:|]+\|$/.test(trimmed);
-      if (isDelimiter) {
-        continue; // delimiter handled by thead/tbody structure
-      }
+  // Brand Badge
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(251, 191, 36); // Amber 400
+  doc.text('HEMA FINANCIAL INTELLIGENCE REPORT', 14, 10);
 
-      if (!inTable) {
-        if (inList) {
-          htmlParts.push('</ul>');
-          inList = false;
-        }
-        inTable = true;
-        tableHeaderParsed = false;
-        htmlParts.push('<div class="table-container"><table>');
-      }
+  // Timestamp (top right)
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(148, 163, 184); // Slate 400
+  doc.text(timestampStr, 196, 10, { align: 'right' });
 
-      const cells = trimmed.split('|').slice(1, -1).map(c => {
-        let text = c.trim();
-        // bold
-        text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        // italic
-        text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-        return text;
-      });
+  // Main Document Title
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(255, 255, 255);
+  doc.text(meta.title, 14, 18);
 
-      if (!tableHeaderParsed) {
-        htmlParts.push('<thead><tr>');
-        cells.forEach(cell => {
-          htmlParts.push(`<th>${cell}</th>`);
-        });
-        htmlParts.push('</tr></thead><tbody>');
-        tableHeaderParsed = true;
-      } else {
-        htmlParts.push('<tr>');
-        cells.forEach((cell, idx) => {
-          // Check if cell looks like currency or number
-          const isNumeric = /^[₹$€£\d,.\s+-]+$/.test(cell.replace(/<[^>]+>/g, '').trim());
-          const alignClass = isNumeric && idx > 1 ? ' class="num-cell"' : '';
-          htmlParts.push(`<td${alignClass}>${cell}</td>`);
-        });
-        htmlParts.push('</tr>');
-      }
-      continue;
-    }
+  // Subtitle
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(203, 213, 225); // Slate 300
+  doc.text('Official Household Intelligence Report · Verified Grounded Ledger', 14, 24);
 
-    if (inTable) {
-      htmlParts.push('</tbody></table></div>');
-      inTable = false;
-    }
+  // 2. Metadata Info Strip (35mm to 45mm)
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(14, 35, 182, 8.5, 1.5, 1.5, 'FD');
 
-    // Unordered lists
-    if (trimmed.startsWith('* ') || trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
-      if (!inList) {
-        htmlParts.push('<ul class="report-list">');
-        inList = true;
-      }
-      let content = trimmed.replace(/^[\*\-•]\s+/, '');
-      content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      content = content.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      htmlParts.push(`<li>${content}</li>`);
-      continue;
-    }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(71, 85, 105);
+  doc.text('SOURCE:', 17, 40.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Personal Household Ledger', 32, 40.5);
 
-    if (inList) {
-      htmlParts.push('</ul>');
-      inList = false;
-    }
+  doc.setFont('helvetica', 'bold');
+  doc.text('STATUS:', 90, 40.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Verified Grounded Records', 105, 40.5);
 
-    // Empty lines
-    if (!trimmed) {
-      continue;
-    }
+  doc.setFont('helvetica', 'bold');
+  doc.text('CLASSIFICATION:', 152, 40.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Private & Confidential', 178, 40.5);
 
-    // Headings
-    if (trimmed.startsWith('# ')) {
-      const text = trimmed.replace(/^#\s+/, '').replace(/\*\*([^*]+)\*\*/g, '$1');
-      htmlParts.push(`<h1 class="report-h1">${text}</h1>`);
-      continue;
-    }
-    if (trimmed.startsWith('## ')) {
-      const text = trimmed.replace(/^##\s+/, '').replace(/\*\*([^*]+)\*\*/g, '$1');
-      htmlParts.push(`<h2 class="report-h2">${text}</h2>`);
-      continue;
-    }
-    if (trimmed.startsWith('### ')) {
-      const text = trimmed.replace(/^###\s+/, '').replace(/\*\*([^*]+)\*\*/g, '$1');
-      htmlParts.push(`<h3 class="report-h3">${text}</h3>`);
-      continue;
-    }
+  let currentY = 48;
 
-    // Regulatory note or disclaimer
-    if (trimmed.startsWith('*(') && trimmed.endsWith(')*')) {
-      const text = trimmed.slice(2, -2).trim();
-      htmlParts.push(`<div class="disclaimer-note">ℹ️ ${text}</div>`);
-      continue;
-    }
-
-    // Regular paragraphs
-    let pContent = trimmed;
-    pContent = pContent.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    pContent = pContent.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    htmlParts.push(`<p class="report-p">${pContent}</p>`);
+  // 3. Narrative Intro Text (if present)
+  if (parsed.introText) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(51, 65, 85);
+    const splitIntro = doc.splitTextToSize(parsed.introText, 182);
+    doc.text(splitIntro, 14, currentY);
+    currentY += splitIntro.length * 4.2 + 2;
   }
 
-  if (inTable) {
-    htmlParts.push('</tbody></table></div>');
+  // 4. Data Table (autoTable)
+  const headers = parsed.tableHeaders.length > 0
+    ? parsed.tableHeaders
+    : ['Item', 'Details', 'Amount (INR)', 'Date'];
+
+  // Clean data rows for PDF (replace raw currency symbols with clean 'Rs.')
+  const formattedRows = parsed.tableRows.map(row => {
+    return row.map((cell, idx) => {
+      let clean = cell
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\*([^*]+)\*/g, '$1')
+        .replace(/â□¹/g, 'Rs. ')
+        .replace(/₹/g, 'Rs. ');
+
+      // If amount column, ensure 'Rs. ' prefix for visual clarity
+      if (/amount|value|price/i.test(headers[idx] || '') && /^\d+/.test(clean.trim())) {
+        clean = `Rs. ${clean.trim()}`;
+      }
+      return clean;
+    });
+  });
+
+  const amountColIdx = headers.findIndex(h => /amount|value|price/i.test(h));
+  const dateColIdx = headers.findIndex(h => /date|day|time/i.test(h));
+  const typeColIdx = headers.findIndex(h => /type|status/i.test(h));
+
+  const colStyles: Record<number, any> = {};
+  if (amountColIdx >= 0) {
+    colStyles[amountColIdx] = { halign: 'right', fontStyle: 'bold' };
   }
-  if (inList) {
-    htmlParts.push('</ul>');
+  if (dateColIdx >= 0) {
+    colStyles[dateColIdx] = { halign: 'center' };
+  }
+  if (typeColIdx >= 0) {
+    colStyles[typeColIdx] = { halign: 'center' };
   }
 
-  const bodyHtml = htmlParts.join('\n');
+  autoTable(doc, {
+    startY: currentY,
+    margin: { left: 14, right: 14 },
+    head: [headers.map(h => h.toUpperCase())],
+    body: formattedRows,
+    theme: 'grid',
+    headStyles: {
+      fillColor: [15, 23, 42],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 8,
+      halign: 'left',
+      cellPadding: 3.2
+    },
+    bodyStyles: {
+      fontSize: 8,
+      textColor: [30, 41, 59],
+      cellPadding: 2.8,
+      lineColor: [226, 232, 240],
+      lineWidth: 0.1
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252]
+    },
+    columnStyles: colStyles
+  });
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${meta.title} - Hema Financial Ledger</title>
-  <style>
-    :root {
-      --primary: #d97706;
-      --primary-dark: #b45309;
-      --navy: #0f172a;
-      --slate-800: #1e293b;
-      --slate-600: #475569;
-      --slate-100: #f1f5f9;
-      --slate-50: #f8fafc;
-      --border: #e2e8f0;
-      --emerald: #059669;
-    }
+  const finalY = (doc as any).lastAutoTable?.finalY || (currentY + 40);
+  currentY = finalY + 8;
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+  // Check if summary card will fit on current page; otherwise add new page
+  if (currentY > 235) {
+    doc.addPage();
+    currentY = 20;
+  }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background-color: #f3f4f6;
-      color: var(--slate-800);
-      line-height: 1.6;
-      padding: 24px 12px;
-      -webkit-font-smoothing: antialiased;
-    }
+  // 5. Summary Insights & Audit Notes Box
+  const summaryItems = parsed.summaryPoints.length > 0
+    ? parsed.summaryPoints
+    : [
+        `Total records documented: ${parsed.tableRows.length} entries.`,
+        'All data securely grounded from household database ledger.',
+        'Keep this statement for personal audit and family social records.'
+      ];
 
-    .document-card {
-      max-width: 860px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-      overflow: hidden;
-    }
+  const cardHeight = Math.max(22, 12 + summaryItems.length * 5.2);
 
-    /* Executive Header */
-    .doc-header {
-      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-      color: #ffffff;
-      padding: 28px 32px;
-      border-bottom: 4px solid var(--primary);
-    }
+  // Soft Amber Card Container
+  doc.setFillColor(255, 251, 235); // Amber 50
+  doc.setDrawColor(253, 230, 138); // Amber 200
+  doc.roundedRect(14, currentY, 182, cardHeight, 1.5, 1.5, 'FD');
 
-    .doc-header-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 12px;
-    }
+  // Solid Gold Indicator Bar on the left
+  doc.setFillColor(217, 119, 6); // Amber 600
+  doc.rect(14, currentY, 2.5, cardHeight, 'F');
 
-    .brand-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(217, 119, 6, 0.2);
-      border: 1px solid rgba(217, 119, 6, 0.5);
-      color: #fbbf24;
-      font-size: 11px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      padding: 4px 10px;
-      border-radius: 6px;
-    }
+  // Summary Title
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(146, 64, 14); // Amber 800
+  doc.text('Summary Insights & Audit Notes', 20, currentY + 6.5);
 
-    .doc-date {
-      font-size: 12px;
-      color: #94a3b8;
-      font-weight: 500;
-    }
+  // Summary Bullets
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.8);
+  doc.setTextColor(51, 65, 85);
 
-    .doc-title {
-      font-size: 22px;
-      font-weight: 800;
-      color: #ffffff;
-      margin-bottom: 6px;
-      letter-spacing: -0.3px;
-    }
+  summaryItems.forEach((item, idx) => {
+    const itemY = currentY + 12 + idx * 5.2;
+    const cleanItem = item.replace(/\*\*([^*]+)\*\*/g, '$1');
+    doc.text(`•  ${cleanItem}`, 20, itemY);
+  });
 
-    .doc-subtitle {
-      font-size: 13px;
-      color: #cbd5e1;
-      font-weight: 400;
-    }
+  currentY += cardHeight + 6;
 
-    /* Document Body */
-    .doc-body {
-      padding: 32px;
-    }
+  // 6. Regulatory / Disclaimer Note
+  if (currentY <= 265) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      'Note: Generated by Hema AI • Household Financial Companion. For personal records & social ledger management.',
+      14,
+      currentY + 2
+    );
+  }
 
-    .report-p {
-      font-size: 14px;
-      color: #334155;
-      margin-bottom: 16px;
-      line-height: 1.65;
-    }
+  // 7. Running Page Footers (Page X of Y on all pages)
+  const totalPages = doc.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
 
-    .report-h1 {
-      font-size: 18px;
-      font-weight: 800;
-      color: var(--navy);
-      margin: 24px 0 12px 0;
-      padding-bottom: 6px;
-      border-bottom: 2px solid var(--border);
-    }
+    // Footer divider line
+    doc.setDrawColor(226, 232, 240);
+    doc.line(14, 283, 196, 283);
 
-    .report-h2 {
-      font-size: 16px;
-      font-weight: 700;
-      color: var(--navy);
-      margin: 20px 0 10px 0;
-    }
+    // Left footer notice
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Hema Household Companion • Confidential Personal Financial Report', 14, 288);
 
-    .report-h3 {
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--primary-dark);
-      margin: 16px 0 8px 0;
-    }
+    // Right page number
+    doc.text(`Page ${p} of ${totalPages}`, 196, 288, { align: 'right' });
+  }
 
-    .report-list {
-      margin: 12px 0 18px 20px;
-      font-size: 14px;
-      color: #334155;
-    }
+  // Generate Base64 Data URI
+  const base64Uri = doc.output('datauristring');
+  const filename = `${meta.filenameBase}.pdf`;
+  const mimeType = 'application/pdf';
 
-    .report-list li {
-      margin-bottom: 6px;
-      padding-left: 4px;
-    }
-
-    /* Tables */
-    .table-container {
-      overflow-x: auto;
-      margin: 24px 0;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-      font-size: 13.5px;
-    }
-
-    thead {
-      background: #0f172a;
-      color: #ffffff;
-    }
-
-    th {
-      padding: 12px 14px;
-      font-size: 11.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: #f8fafc;
-      border-bottom: 1px solid #334155;
-      white-space: nowrap;
-    }
-
-    td {
-      padding: 11px 14px;
-      border-bottom: 1px solid var(--border);
-      color: #1e293b;
-      white-space: nowrap;
-    }
-
-    tbody tr:nth-child(even) {
-      background-color: #f8fafc;
-    }
-
-    tbody tr:hover {
-      background-color: #f1f5f9;
-    }
-
-    .num-cell {
-      text-align: right;
-      font-weight: 600;
-      font-feature-settings: "tnum";
-    }
-
-    /* Disclaimer & Footer */
-    .disclaimer-note {
-      background: #fffbeb;
-      border-left: 4px solid var(--primary);
-      padding: 10px 14px;
-      border-radius: 0 8px 8px 0;
-      font-size: 12px;
-      color: #92400e;
-      margin: 20px 0;
-      font-style: italic;
-    }
-
-    .doc-footer {
-      border-top: 1px solid var(--border);
-      padding: 20px 32px;
-      background: #f8fafc;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-      color: #64748b;
-    }
-
-    .footer-left {
-      font-weight: 600;
-    }
-
-    .footer-right {
-      color: #94a3b8;
-    }
-
-    @media print {
-      body {
-        background: #ffffff;
-        padding: 0;
-      }
-      .document-card {
-        border: none;
-        box-shadow: none;
-        max-width: 100%;
-      }
-      .doc-header {
-        background: #0f172a !important;
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-      th {
-        background: #0f172a !important;
-        color: #ffffff !important;
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-    }
-
-    @media (max-width: 640px) {
-      .doc-header {
-        padding: 20px 18px;
-      }
-      .doc-body {
-        padding: 20px 16px;
-      }
-      .doc-footer {
-        padding: 16px 18px;
-        flex-direction: column;
-        gap: 6px;
-        text-align: center;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="document-card">
-    <div class="doc-header">
-      <div class="doc-header-top">
-        <div class="brand-badge">🏛️ Hema Financial Ledger</div>
-        <div class="doc-date">${formattedDate} • ${formattedTime}</div>
-      </div>
-      <h1 class="doc-title">${meta.title}</h1>
-      <p class="doc-subtitle">Official Household Intelligence Report · Verified Grounded Ledger</p>
-    </div>
-
-    <div class="doc-body">
-      ${bodyHtml}
-    </div>
-
-    <div class="doc-footer">
-      <div class="footer-left">Generated by Hema AI • Household Financial Companion</div>
-      <div class="footer-right">Confidential Personal Household Ledger • Keep Secure</div>
-    </div>
-  </div>
-</body>
-</html>`;
+  return { base64: base64Uri, filename, mimeType };
 }

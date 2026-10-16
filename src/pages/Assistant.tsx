@@ -30,8 +30,8 @@ import { exportAndSaveFile } from '@/lib/nativeFiles';
 import { 
   isDocumentOrSheetRequested, 
   extractDocumentMetadata, 
-  extractMarkdownTablesAsCSV, 
-  generateExecutiveHtmlDocument, 
+  generateExecutiveExcelWorkbook, 
+  generateExecutivePdfDocument, 
   DocumentMetadata 
 } from '@/lib/documentExport';
 import { 
@@ -182,39 +182,48 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
   };
 
   const handleDownloadSheet = async (text: string, index: number, metadata?: DocumentMetadata) => {
-    const csv = extractMarkdownTablesAsCSV(text);
-    if (!csv) return;
+    try {
+      const meta = metadata || extractDocumentMetadata(text);
+      const excel = generateExecutiveExcelWorkbook(text, meta);
 
-    const meta = metadata || extractDocumentMetadata(text);
-    const filename = `${meta.filenameBase}.csv`;
+      const res = await exportAndSaveFile({
+        filename: excel.filename,
+        content: excel.base64,
+        mimeType: excel.mimeType,
+        title: `${meta.title} (Excel Workbook)`,
+        isBase64: true
+      });
 
-    const res = await exportAndSaveFile({
-      filename,
-      content: csv,
-      mimeType: 'text/csv',
-      title: `${meta.title} (Excel Spreadsheet)`
-    });
-
-    setDownloadStatus({ index, type: 'sheet', message: res.success ? 'Saved Excel!' : 'Failed' });
-    setTimeout(() => setDownloadStatus(null), 2500);
+      setDownloadStatus({ index, type: 'sheet', message: res.success ? 'Saved Excel!' : 'Failed' });
+      setTimeout(() => setDownloadStatus(null), 2500);
+    } catch (e: any) {
+      console.error('[DownloadSheet] Error exporting Excel:', e);
+      setDownloadStatus({ index, type: 'sheet', message: 'Export Error' });
+      setTimeout(() => setDownloadStatus(null), 2500);
+    }
   };
 
   const handleDownloadDocument = async (text: string, index: number, metadata?: DocumentMetadata) => {
-    if (!text) return;
+    try {
+      if (!text) return;
+      const meta = metadata || extractDocumentMetadata(text);
+      const pdf = generateExecutivePdfDocument(text, meta);
 
-    const meta = metadata || extractDocumentMetadata(text);
-    const htmlDoc = generateExecutiveHtmlDocument(text, meta);
-    const filename = `${meta.filenameBase}.html`;
+      const res = await exportAndSaveFile({
+        filename: pdf.filename,
+        content: pdf.base64,
+        mimeType: pdf.mimeType,
+        title: `${meta.title} (Executive PDF Report)`,
+        isBase64: true
+      });
 
-    const res = await exportAndSaveFile({
-      filename,
-      content: htmlDoc,
-      mimeType: 'text/html',
-      title: `${meta.title} (Executive Document)`
-    });
-
-    setDownloadStatus({ index, type: 'doc', message: res.success ? 'Saved Doc!' : 'Failed' });
-    setTimeout(() => setDownloadStatus(null), 2500);
+      setDownloadStatus({ index, type: 'doc', message: res.success ? 'Saved PDF!' : 'Failed' });
+      setTimeout(() => setDownloadStatus(null), 2500);
+    } catch (e: any) {
+      console.error('[DownloadDocument] Error exporting PDF:', e);
+      setDownloadStatus({ index, type: 'doc', message: 'PDF Error' });
+      setTimeout(() => setDownloadStatus(null), 2500);
+    }
   };
 
   const handleConfirmClearChat = () => {
@@ -588,8 +597,8 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                               </p>
                               <p className="text-[10px] text-slate-500 truncate">
                                 {hasTable 
-                                  ? `${docMeta.rowCount} records · Formatted Document & Excel Sheet`
-                                  : 'Executive Financial Document'}
+                                  ? `${docMeta.rowCount} records · Executive PDF Report & Excel Sheet (.xlsx)`
+                                  : 'Executive PDF Financial Report'}
                               </p>
                             </div>
                           </div>
@@ -600,7 +609,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                                 type="button"
                                 onClick={() => handleDownloadSheet(msg.text, i, docMeta)}
                                 className="flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold text-emerald-800 bg-white hover:bg-emerald-50 border border-emerald-300 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
-                                title="Download Excel / CSV spreadsheet (opens in Excel & Google Sheets)"
+                                title="Download styled Excel spreadsheet (.xlsx) with clean headers and styled columns"
                               >
                                 {downloadStatus?.index === i && downloadStatus?.type === 'sheet' ? (
                                   <>
@@ -610,7 +619,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                                 ) : (
                                   <>
                                     <FileSpreadsheet size={12} className="text-emerald-700" />
-                                    <span>Excel (CSV)</span>
+                                    <span>Excel (.xlsx)</span>
                                   </>
                                 )}
                               </button>
@@ -620,17 +629,17 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                               type="button"
                               onClick={() => handleDownloadDocument(msg.text, i, docMeta)}
                               className="flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold text-primary-800 bg-white hover:bg-primary-50 border border-primary-300 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
-                              title="Download executive document (opens in browser, Word, Google Docs, or prints to PDF)"
+                              title="Download executive corporate PDF report (.pdf) with clean layout and summary insights"
                             >
                               {downloadStatus?.index === i && downloadStatus?.type === 'doc' ? (
-                                <>
-                                  <Check size={12} className="text-primary-700" />
-                                  <span className="text-primary-800 font-bold">{downloadStatus.message}</span>
-                                </>
+                                  <>
+                                    <Check size={12} className="text-primary-700" />
+                                    <span className="text-primary-800 font-bold">{downloadStatus.message}</span>
+                                  </>
                               ) : (
                                 <>
-                                  <Download size={12} className="text-primary-600" />
-                                  <span>Download Doc</span>
+                                  <FileText size={12} className="text-primary-600" />
+                                  <span>PDF Report</span>
                                 </>
                               )}
                             </button>

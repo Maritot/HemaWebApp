@@ -3,7 +3,7 @@ import { Share } from '@capacitor/share';
 
 /**
  * Universal Mobile Native File Exporter
- * 1. Writes file directly to Android Filesystem (Cache + Documents)
+ * 1. Writes binary (PDF, Excel XLSX) or text (JSON, CSV) directly to Android Filesystem
  * 2. Invokes native Android Share Sheet allowing user to save directly to Downloads, Drive, or WhatsApp
  * 3. Falls back to browser Blob download when run on desktop web
  */
@@ -12,27 +12,47 @@ export async function exportAndSaveFile(options: {
   content: string;
   mimeType: string;
   title: string;
+  isBase64?: boolean;
 }): Promise<{ success: boolean; method: 'native_share' | 'browser_download'; message: string }> {
-  const { filename, content, mimeType, title } = options;
+  const { filename, content, mimeType, title, isBase64 = false } = options;
 
   // 1. Try Native Capacitor Filesystem + Native Share Sheet
   try {
-    // Write file to Cache directory first for sharing
-    await Filesystem.writeFile({
-      path: filename,
-      data: content,
-      directory: Directory.Cache,
-      encoding: Encoding.UTF8
-    });
+    const cleanBase64 = isBase64 ? content.replace(/^data:[^;]+;base64,/, '') : '';
 
-    // Also attempt writing to Documents so user has a local copy
-    try {
+    // Write file to Cache directory first for sharing
+    if (isBase64) {
+      await Filesystem.writeFile({
+        path: filename,
+        data: cleanBase64,
+        directory: Directory.Cache
+        // Do NOT pass encoding for binary base64 in Capacitor
+      });
+    } else {
       await Filesystem.writeFile({
         path: filename,
         data: content,
-        directory: Directory.Documents,
+        directory: Directory.Cache,
         encoding: Encoding.UTF8
       });
+    }
+
+    // Also attempt writing to Documents if accessible
+    try {
+      if (isBase64) {
+        await Filesystem.writeFile({
+          path: filename,
+          data: cleanBase64,
+          directory: Directory.Documents
+        });
+      } else {
+        await Filesystem.writeFile({
+          path: filename,
+          data: content,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8
+        });
+      }
     } catch (e) {
       // Non-fatal if Documents restricted by scoped storage
     }
@@ -47,9 +67,9 @@ export async function exportAndSaveFile(options: {
     if (canShare.value && fileUri.uri) {
       await Share.share({
         title,
-        text: `Exported from Hema: ${filename}`,
+        text: `Hema Ledger: ${filename}`,
         url: fileUri.uri,
-        dialogTitle: `Save ${filename}`
+        dialogTitle: `Save or Share ${filename}`
       });
 
       return {
@@ -64,7 +84,20 @@ export async function exportAndSaveFile(options: {
 
   // 2. Web Browser Fallback (<a download>)
   try {
-    const blob = new Blob([content], { type: mimeType });
+    let blob: Blob;
+    if (isBase64) {
+      const cleanBase64 = content.replace(/^data:[^;]+;base64,/, '');
+      const byteCharacters = atob(cleanBase64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      blob = new Blob([byteArray], { type: mimeType });
+    } else {
+      blob = new Blob([content], { type: mimeType });
+    }
+
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
