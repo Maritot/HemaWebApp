@@ -18,7 +18,8 @@ import {
   Wallet,
   Gift,
   FileSpreadsheet,
-  Download
+  Download,
+  FileText
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +27,13 @@ import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { FormattedChatMessage } from '@/components/FormattedChatMessage';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { exportAndSaveFile } from '@/lib/nativeFiles';
+import { 
+  isDocumentOrSheetRequested, 
+  extractDocumentMetadata, 
+  extractMarkdownTablesAsCSV, 
+  generateExecutiveHtmlDocument, 
+  DocumentMetadata 
+} from '@/lib/documentExport';
 import { 
   queryGeminiStream,
   getGeminiApiKey, 
@@ -53,63 +61,6 @@ const getInitialGreeting = (lang: string): string => {
   return 'Namaste! I am Hema, your household financial companion. Ask me anything about gold rates, informal ₹ Vaddi calculations, or family budgeting.';
 };
 
-/**
- * Converts Markdown table(s) embedded in text into clean, Excel-compatible CSV.
- */
-export function extractMarkdownTablesAsCSV(markdown: string): string | null {
-  if (!markdown || !markdown.includes('|')) return null;
-
-  const lines = markdown.split('\n');
-  const csvTables: string[] = [];
-  let currentTableLines: string[] = [];
-  let inTable = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      const isDelimiter = /^\|[\s\-:|]+\|$/.test(trimmed);
-      if (!isDelimiter) {
-        currentTableLines.push(trimmed);
-      }
-      inTable = true;
-    } else {
-      if (inTable && currentTableLines.length > 0) {
-        const rows = currentTableLines.map(row => {
-          const cells = row.split('|').slice(1, -1).map(c => {
-            let clean = c.trim()
-              .replace(/\*\*([^*]+)\*\*/g, '$1')
-              .replace(/\*([^*]+)\*/g, '$1')
-              .replace(/`([^`]+)`/g, '$1');
-            clean = clean.replace(/"/g, '""');
-            return `"${clean}"`;
-          });
-          return cells.join(',');
-        });
-        csvTables.push(rows.join('\r\n'));
-        currentTableLines = [];
-      }
-      inTable = false;
-    }
-  }
-
-  if (inTable && currentTableLines.length > 0) {
-    const rows = currentTableLines.map(row => {
-      const cells = row.split('|').slice(1, -1).map(c => {
-        let clean = c.trim()
-          .replace(/\*\*([^*]+)\*\*/g, '$1')
-          .replace(/\*([^*]+)\*/g, '$1')
-          .replace(/`([^`]+)`/g, '$1');
-        clean = clean.replace(/"/g, '""');
-        return `"${clean}"`;
-      });
-      return cells.join(',');
-    });
-    csvTables.push(rows.join('\r\n'));
-  }
-
-  return csvTables.length > 0 ? csvTables.join('\r\n\r\n') : null;
-}
-
 interface AssistantProps {
   isKeyboardOpen?: boolean;
 }
@@ -125,7 +76,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [downloadStatus, setDownloadStatus] = useState<{ index: number; type: 'sheet' | 'report'; message: string } | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<{ index: number; type: 'sheet' | 'doc'; message: string } | null>(null);
   const [showCompliance, setShowCompliance] = useState(true);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   
@@ -230,38 +181,39 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     }
   };
 
-  const handleDownloadSheet = async (text: string, index: number) => {
+  const handleDownloadSheet = async (text: string, index: number, metadata?: DocumentMetadata) => {
     const csv = extractMarkdownTablesAsCSV(text);
     if (!csv) return;
 
-    const dateStr = new Date().toISOString().slice(0, 10);
-    const filename = `hema_sheet_${dateStr}_${index + 1}.csv`;
+    const meta = metadata || extractDocumentMetadata(text);
+    const filename = `${meta.filenameBase}.csv`;
 
     const res = await exportAndSaveFile({
       filename,
       content: csv,
       mimeType: 'text/csv',
-      title: 'Hema Financial Sheet'
+      title: `${meta.title} (Excel Spreadsheet)`
     });
 
-    setDownloadStatus({ index, type: 'sheet', message: res.success ? 'Saved Sheet!' : 'Failed' });
+    setDownloadStatus({ index, type: 'sheet', message: res.success ? 'Saved Excel!' : 'Failed' });
     setTimeout(() => setDownloadStatus(null), 2500);
   };
 
-  const handleDownloadReport = async (text: string, index: number) => {
+  const handleDownloadDocument = async (text: string, index: number, metadata?: DocumentMetadata) => {
     if (!text) return;
 
-    const dateStr = new Date().toISOString().slice(0, 10);
-    const filename = `hema_report_${dateStr}_${index + 1}.txt`;
+    const meta = metadata || extractDocumentMetadata(text);
+    const htmlDoc = generateExecutiveHtmlDocument(text, meta);
+    const filename = `${meta.filenameBase}.html`;
 
     const res = await exportAndSaveFile({
       filename,
-      content: text,
-      mimeType: 'text/plain',
-      title: 'Hema Financial Report'
+      content: htmlDoc,
+      mimeType: 'text/html',
+      title: `${meta.title} (Executive Document)`
     });
 
-    setDownloadStatus({ index, type: 'report', message: res.success ? 'Saved Doc!' : 'Failed' });
+    setDownloadStatus({ index, type: 'doc', message: res.success ? 'Saved Doc!' : 'Failed' });
     setTimeout(() => setDownloadStatus(null), 2500);
   };
 
@@ -582,10 +534,15 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
               </div>
             ) : (
               (() => {
-                const hasTable = msg.text ? !!extractMarkdownTablesAsCSV(msg.text) : false;
+                // Find preceding user message to know what was requested
+                const precedingUserMsg = i > 0 && messages[i - 1].role === 'user' ? messages[i - 1].text : '';
+                const isDocArtifact = isDocumentOrSheetRequested(precedingUserMsg, msg.text);
+                const docMeta = isDocArtifact ? extractDocumentMetadata(msg.text) : null;
+                const hasTable = docMeta ? docMeta.hasTable : false;
+
                 return (
                   <div className="max-w-[95%] sm:max-w-[88%] w-full sm:w-auto rounded-2xl rounded-tl-xs bg-white border border-primary-200/90 shadow-soft p-3 sm:p-3.5 text-slate-800">
-                    {/* Assistant Card Header */}
+                    {/* Assistant Card Header - Minimal, clean, no unwanted document buttons on generic responses */}
                     <div className="flex items-center justify-between border-b border-primary-100/70 pb-1.5 mb-2 gap-2">
                       <div className="flex items-center space-x-1.5 shrink-0">
                         <div className="w-4 h-4 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center shadow-2xs">
@@ -594,70 +551,93 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
                         <span className="text-[11px] font-bold text-primary-950 tracking-wide">Hema AI</span>
                       </div>
 
-                      {/* Actions: Download Sheet (CSV), Download Report (Doc), Copy */}
+                      {/* Header only contains the clean Copy Action */}
                       {msg.text && (
-                        <div className="flex items-center space-x-1 flex-wrap justify-end">
-                          {hasTable && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(msg.text, i)}
+                          className="flex items-center space-x-1 text-[10px] font-semibold text-slate-500 hover:text-primary-700 hover:bg-primary-50 px-1.5 py-0.5 rounded-md transition-colors cursor-pointer"
+                          title="Copy response to clipboard"
+                        >
+                          {copiedIndex === i ? (
+                            <>
+                              <Check size={11} className="text-green-600" />
+                              <span className="text-green-700 font-bold">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={11} />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* ChatGPT-Style Generated Document / Spreadsheet Artifact Card (ONLY when document/sheet was requested and generated) */}
+                    {isDocArtifact && docMeta && (
+                      <div className="my-2.5 p-3 rounded-xl bg-gradient-to-r from-amber-50/90 via-white to-primary-50/80 border border-primary-200/90 shadow-2xs">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          <div className="flex items-center space-x-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-primary-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                              {hasTable ? <FileSpreadsheet size={16} /> : <FileText size={16} />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-bold text-slate-900 truncate">
+                                {docMeta.title}
+                              </p>
+                              <p className="text-[10px] text-slate-500 truncate">
+                                {hasTable 
+                                  ? `${docMeta.rowCount} records · Formatted Document & Excel Sheet`
+                                  : 'Executive Financial Document'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-1.5 shrink-0 self-end sm:self-auto">
+                            {hasTable && (
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadSheet(msg.text, i, docMeta)}
+                                className="flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold text-emerald-800 bg-white hover:bg-emerald-50 border border-emerald-300 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
+                                title="Download Excel / CSV spreadsheet (opens in Excel & Google Sheets)"
+                              >
+                                {downloadStatus?.index === i && downloadStatus?.type === 'sheet' ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-700" />
+                                    <span className="text-emerald-800 font-bold">{downloadStatus.message}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileSpreadsheet size={12} className="text-emerald-700" />
+                                    <span>Excel (CSV)</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
+
                             <button
                               type="button"
-                              onClick={() => handleDownloadSheet(msg.text, i)}
-                              className="flex items-center space-x-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300/80 px-2 py-0.5 rounded-md shadow-2xs transition-colors cursor-pointer"
-                              title="Download table as CSV spreadsheet (opens in Excel/Sheets)"
+                              onClick={() => handleDownloadDocument(msg.text, i, docMeta)}
+                              className="flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold text-primary-800 bg-white hover:bg-primary-50 border border-primary-300 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
+                              title="Download executive document (opens in browser, Word, Google Docs, or prints to PDF)"
                             >
-                              {downloadStatus?.index === i && downloadStatus?.type === 'sheet' ? (
+                              {downloadStatus?.index === i && downloadStatus?.type === 'doc' ? (
                                 <>
-                                  <Check size={11} className="text-emerald-700" />
-                                  <span className="text-emerald-800 font-bold">{downloadStatus.message}</span>
+                                  <Check size={12} className="text-primary-700" />
+                                  <span className="text-primary-800 font-bold">{downloadStatus.message}</span>
                                 </>
                               ) : (
                                 <>
-                                  <FileSpreadsheet size={11} className="text-emerald-700" />
-                                  <span>Download Sheet (CSV)</span>
+                                  <Download size={12} className="text-primary-600" />
+                                  <span>Download Doc</span>
                                 </>
                               )}
                             </button>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadReport(msg.text, i)}
-                            className="flex items-center space-x-1 text-[10px] font-semibold text-slate-600 hover:text-primary-700 hover:bg-primary-50 px-1.5 py-0.5 rounded-md transition-colors cursor-pointer"
-                            title="Download complete report or document"
-                          >
-                            {downloadStatus?.index === i && downloadStatus?.type === 'report' ? (
-                              <>
-                                <Check size={11} className="text-primary-700" />
-                                <span className="text-primary-800 font-bold">{downloadStatus.message}</span>
-                              </>
-                            ) : (
-                              <>
-                                <Download size={11} />
-                                <span>Save Doc</span>
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleCopyMessage(msg.text, i)}
-                            className="flex items-center space-x-1 text-[10px] font-semibold text-slate-500 hover:text-primary-700 hover:bg-primary-50 px-1.5 py-0.5 rounded-md transition-colors cursor-pointer"
-                            title="Copy response to clipboard"
-                          >
-                            {copiedIndex === i ? (
-                              <>
-                                <Check size={11} className="text-green-600" />
-                                <span className="text-green-700 font-bold">Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={11} />
-                                <span>Copy</span>
-                              </>
-                            )}
-                          </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
                     {/* Formatted Markdown Body */}
                     {msg.text ? (
