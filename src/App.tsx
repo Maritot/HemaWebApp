@@ -12,12 +12,15 @@ import Assistant from './pages/Assistant';
 import SettingsPage from './pages/Settings';
 import { LockScreen } from './components/LockScreen';
 import { isSessionUnlocked, lockSession, isPinEnabled } from './lib/security';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthScreen } from './components/AuthScreen';
 
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
   const location = useLocation();
   const isAssistantPage = location.pathname === '/assistant';
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const { user, isAuthenticated, isLoading } = useAuth();
 
   useEffect(() => {
     let showListener: any;
@@ -47,6 +50,24 @@ const AppContent: React.FC = () => {
     };
   }, []);
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-900 text-white font-sans">
+        <div className="flex flex-col items-center space-y-3">
+          <div className="w-16 h-16 rounded-2xl bg-slate-800 border border-amber-500/40 p-2 shadow-inner flex items-center justify-center animate-pulse">
+            <img src="/hema-logo.gif" alt="Hema" className="w-full h-full object-contain rounded-xl" />
+          </div>
+          <p className="text-xs font-bold text-amber-400 tracking-wider uppercase">Loading Secured Ledger...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Protected Route Guard: If not authenticated, force AuthScreen
+  if (!isAuthenticated) {
+    return <AuthScreen />;
+  }
+
   return (
     <div className="flex flex-col h-screen bg-background text-textMain font-sans overflow-hidden">
       {/* Header */}
@@ -74,16 +95,24 @@ const AppContent: React.FC = () => {
               <Lock size={18} />
             </button>
           )}
-          <NavLink to="/settings" className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-semibold cursor-pointer text-xs">
-            US
+          
+          {/* Active User Avatar & Profile Badge */}
+          <NavLink 
+            to="/settings" 
+            className="h-8 px-2 sm:px-2.5 rounded-full bg-amber-50 border border-amber-300/80 text-amber-950 flex items-center space-x-1.5 font-bold text-xs shadow-2xs hover:bg-amber-100 transition-colors cursor-pointer"
+            title={`Logged in as ${user?.name} (${user?.email})`}
+          >
+            <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[10px] font-black">
+              {user?.name ? user.name.slice(0, 2).toUpperCase() : 'ME'}
+            </span>
+            <span className="max-w-[80px] truncate hidden sm:inline text-[11px] font-bold">
+              {user?.name?.split(' ')[0] || 'Account'}
+            </span>
           </NavLink>
         </div>
       </header>
 
-      {/* Main Content Area:
-          For Assistant: strictly flex-1 min-h-0 overflow-hidden with zero outer scroll so the top AI header never goes under the header.
-          For Standard pages: overflow-y-auto pb-24 for scrollable dashboard cards.
-      */}
+      {/* Main Content Area */}
       <main className={cn(
         "flex-1 min-h-0",
         isAssistantPage 
@@ -100,10 +129,7 @@ const AppContent: React.FC = () => {
         </Routes>
       </main>
 
-      {/* Bottom Navigation:
-          - Docked relatively under the Assistant container when keyboard is closed.
-          - Completely hidden when keyboard is open to give 100% vertical space to the chat and avoid floating nav clutter.
-      */}
+      {/* Bottom Navigation */}
       <nav className={cn(
         "w-full bg-surface border-t border-borderLight shadow-[0_-4px_20px_-2px_rgba(0,0,0,0.05)] pb-safe z-20 transition-all duration-150",
         isAssistantPage ? "relative shrink-0" : "absolute bottom-0",
@@ -138,9 +164,11 @@ const App: React.FC = () => {
   }
 
   return (
-    <Router>
-      <AppContent />
-    </Router>
+    <AuthProvider>
+      <Router>
+        <AppContent />
+      </Router>
+    </AuthProvider>
   );
 };
 

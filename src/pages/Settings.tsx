@@ -42,6 +42,7 @@ import {
   triggerSystemNotification, 
   checkNotificationPermission 
 } from '@/lib/notifications';
+import { useAuth } from '@/context/AuthContext';
 
 const Settings: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -305,13 +306,64 @@ const Settings: React.FC = () => {
     setTimeout(() => setInAppAlert(null), 4500);
   };
 
+  const { user, logout, knownUsers } = useAuth();
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
       
-      <div className="mb-6">
+      <div className="mb-4">
         <h2 className="text-2xl font-bold text-textMain tracking-tight">{t('settings.title')}</h2>
         <p className="text-textMuted text-sm">{t('settings.subtitle')}</p>
       </div>
+
+      {/* Account Profile Card */}
+      {user && (
+        <Card className="border border-amber-200/90 bg-gradient-to-r from-amber-50/90 via-white to-primary-50/70 shadow-2xs mb-4 overflow-hidden">
+          <CardContent className="p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center space-x-3 min-w-0">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-600 to-amber-700 text-white flex items-center justify-center font-black text-lg shadow-xs shrink-0">
+                  {user.name.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center space-x-2">
+                    <h3 className="font-bold text-slate-900 text-base truncate">{user.name}</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold uppercase tracking-wider shrink-0">
+                      Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 truncate">{user.email}</p>
+                  {user.phone && <p className="text-[11px] text-slate-400 mt-0.5">{user.phone}</p>}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={logout}
+                className="px-3 py-1.5 rounded-xl border border-red-200 bg-white hover:bg-red-50 text-red-700 text-xs font-bold transition-all flex items-center space-x-1 shrink-0 cursor-pointer shadow-2xs"
+                title="Sign out of current account"
+              >
+                <LogOut size={13} />
+                <span>Sign Out</span>
+              </button>
+            </div>
+
+            {/* Privacy & Tenant Isolation Status */}
+            <div className="mt-3.5 pt-3 border-t border-amber-200/60 flex items-center justify-between text-[11px] text-slate-500">
+              <span className="flex items-center space-x-1.5 truncate">
+                <Shield size={12} className="text-amber-600 shrink-0" />
+                <span className="font-semibold text-slate-700">Isolated Partition:</span>
+                <code className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-600 truncate">
+                  {user.id}
+                </code>
+              </span>
+              <span className="text-[10px] text-emerald-700 font-bold flex items-center space-x-1 shrink-0">
+                <span>🔒 Strict Data Isolation</span>
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="space-y-4">
         {/* Language Selection */}
@@ -369,17 +421,11 @@ const Settings: React.FC = () => {
 
         {/* Sign Out / Reset session */}
         <button 
-          onClick={() => {
-            if (pinEnabled) {
-              handleLockNow();
-            } else {
-              window.location.reload();
-            }
-          }}
-          className="w-full flex items-center justify-center space-x-2 py-4 bg-red-50 text-red-600 font-bold rounded-xl mt-6 hover:bg-red-100 transition-colors shadow-xs"
+          onClick={logout}
+          className="w-full flex items-center justify-center space-x-2 py-3.5 bg-red-50 hover:bg-red-100 text-red-700 font-bold rounded-xl mt-6 transition-colors shadow-2xs cursor-pointer text-sm"
         >
-          <LogOut size={18} />
-          <span>{pinEnabled ? 'Lock App Session' : t('settings.logout')}</span>
+          <LogOut size={16} />
+          <span>Sign Out / Switch Account</span>
         </button>
 
       </div>

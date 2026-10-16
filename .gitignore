@@ -34,3 +34,6 @@ android/captures
 
 *.apk
 
+# Server data
+server/data/*.json
+server/data/*.tmp*

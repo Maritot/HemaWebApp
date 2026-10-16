@@ -34,6 +34,7 @@ import {
   generateExecutivePdfDocument, 
   DocumentMetadata 
 } from '@/lib/documentExport';
+import { getActiveUserId } from '@/lib/db';
 import { 
   queryGeminiStream,
   getGeminiApiKey, 
@@ -49,7 +50,7 @@ import {
   FREE_TIER_MODELS
 } from '@/lib/gemini';
 
-const CHAT_HISTORY_STORAGE_KEY = 'hema_assistant_chat_history';
+const getChatHistoryStorageKey = () => `hema_assistant_chat_history_${getActiveUserId()}`;
 
 const getInitialGreeting = (lang: string): string => {
   if (lang === 'te') {
@@ -80,10 +81,10 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
   const [showCompliance, setShowCompliance] = useState(true);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   
-  // Persisted chat history across tabs and app navigation
+  // Persisted chat history across tabs and app navigation (strictly isolated per user)
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+      const saved = localStorage.getItem(getChatHistoryStorageKey());
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -105,10 +106,25 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
   };
 
+  // Reload user's isolated chat history if user switches
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(getChatHistoryStorageKey());
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+          return;
+        }
+      }
+      setMessages([{ role: 'assistant', text: getInitialGreeting(chatLanguage), lang: chatLanguage }]);
+    } catch (e) {}
+  }, []);
+
   // Auto-persist messages whenever they change
   useEffect(() => {
     try {
-      localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(messages));
+      localStorage.setItem(getChatHistoryStorageKey(), JSON.stringify(messages));
     } catch (e) {}
   }, [messages]);
 
@@ -230,7 +246,7 @@ const Assistant: React.FC<AssistantProps> = ({ isKeyboardOpen = false }) => {
     const reset = [{ role: 'assistant' as const, text: getInitialGreeting(chatLanguage), lang: chatLanguage }];
     setMessages(reset);
     try {
-      localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(reset));
+      localStorage.setItem(getChatHistoryStorageKey(), JSON.stringify(reset));
     } catch (e) {}
     setShowClearConfirm(false);
   };
