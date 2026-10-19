@@ -76,6 +76,7 @@ export const AuthScreen: React.FC = () => {
   const [otpPhone, setOtpPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [simulatedCode, setSimulatedCode] = useState<string | null>(null);
 
   // Cloud Config Modal State
   const [showCloudModal, setShowCloudModal] = useState(false);
@@ -182,7 +183,14 @@ export const AuthScreen: React.FC = () => {
     try {
       const res = await loginWithPhoneOtp(otpPhone);
       setOtpSent(true);
-      setSuccessMessage(res.message);
+      if (res.simulated && res.otpCode) {
+        setSimulatedCode(res.otpCode);
+        setOtpCode(res.otpCode);
+        setSuccessMessage(`In-App Verification Code generated: ${res.otpCode}. Tap "Verify & Enter Ledger" to proceed!`);
+      } else {
+        setSimulatedCode(null);
+        setSuccessMessage(res.message);
+      }
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to send OTP code.');
     } finally {

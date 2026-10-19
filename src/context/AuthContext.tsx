@@ -21,7 +21,7 @@ interface AuthContextType {
     securityQuestion: string;
     securityAnswer: string;
   }) => Promise<void>;
-  loginWithPhoneOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
+  loginWithPhoneOtp: (phone: string) => Promise<{ success: boolean; message: string; simulated?: boolean; otpCode?: string }>;
   verifyPhoneOtp: (phone: string, token: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;

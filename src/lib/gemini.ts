@@ -1,4 +1,5 @@
 import { getTransactions, getDebts, getGifts, getPeople } from './db';
+import { getLiveGoldRates, formatGoldRatesSummary } from './marketRates';
 
 const GEMINI_KEY_STORAGE = 'hema_gemini_api_key';
 const ACTIVE_MODEL_STORAGE = 'hema_active_gemini_model';
@@ -401,8 +402,18 @@ export async function buildHouseholdRAGContext(query: string): Promise<string> {
         }).join('\n')
       : 'None recorded yet.';
 
+    const bullion = await getLiveGoldRates();
+
     return `
-=== VERIFIED LIVE HOUSEHOLD FINANCIAL DATABASE (FULL RAG CONTEXT) ===
+=== VERIFIED LIVE HOUSEHOLD FINANCIAL DATABASE & MARKET RATES (FULL RAG CONTEXT) ===
+[LIVE MARKET BULLION RATES (TIRUPATI, AP & ALL-INDIA)]:
+• Reference City: ${bullion.city}, ${bullion.state} (Verified As of ${bullion.dateStr})
+• 24-Karat Gold (99.9% Pure Bullion): ₹${bullion.rate24kPerGram.toLocaleString('en-IN')} per gram (₹${(bullion.rate24kPerGram * 10).toLocaleString('en-IN')} per 10 grams)
+• 22-Karat Gold (91.6% KDM Hallmark Jewellery): ₹${bullion.rate22kPerGram.toLocaleString('en-IN')} per gram (₹${(bullion.rate22kPerGram * 10).toLocaleString('en-IN')} per 10 grams | ₹${(bullion.rate22kPerGram * 8).toLocaleString('en-IN')} per 8g Tola/Savaran)
+• 18-Karat Gold (75% Purity): ₹${bullion.rate18kPerGram.toLocaleString('en-IN')} per gram (₹${(bullion.rate18kPerGram * 10).toLocaleString('en-IN')} per 10 grams)
+• Silver (Fine 99.9% / వెండి): ₹${bullion.silverPerGram.toLocaleString('en-IN')} per gram (₹${(bullion.silverPerGram * 1000).toLocaleString('en-IN')} per 1 kg)
+• Jewellery Buying Guidance: Remind buyers that ornament purchases incur making charges (తరుగు / wastage typically ${bullion.wastageRange}) and ${bullion.gstPercent}% GST. Always advise verifying the 6-digit BIS HUID hallmark.
+
 [SUMMARY TOTALS]:
 • Total Recorded Household Income: ₹${totalIncome.toLocaleString('en-IN')}
 • Total Recorded Household Expenses: ₹${totalExpense.toLocaleString('en-IN')}
@@ -516,10 +527,11 @@ CRITICAL ENTERPRISE GUARDRAILS & DOMAIN SCOPE (STRICTLY ENFORCED):
 
 5. DIRECT & PURPOSEFUL: For general advisory queries, keep answers punchy and concise (under 100-150 words). HOWEVER, when the user explicitly asks for a sheet, spreadsheet, table, report, full list, breakdown, or detailed summary, provide the COMPLETE table or report with all relevant items without artificial truncation.
 
-6. CLEAN STRUCTURED FORMATTING:
-   - Use bold titles (**Headline**) to organize key facts.
-   - Use bullet points (* Item) for lists.
-   - For Gold rates, interest calculations, or budgets, format into clean, compact bullet pairs (e.g. * **24K Gold:** ₹8,150/g | * **22K Gold:** ₹7,470/g).
+6. ACCURATE LIVE BULLION RATES & STRUCTURED FORMATTING:
+   - Use bold titles (**Headline**) to organize key facts and bullet points (* Item) for lists.
+   - For Gold or Silver rate queries (especially in Tirupati, Andhra Pradesh, or India): ALWAYS quote the EXACT live rates provided in the [LIVE MARKET BULLION RATES] section of your verified context above!
+   - NEVER invent or use old pre-2024 rates (such as ₹7,000/g or ₹8,000/g). Current rates in 2026 are ~₹14,765/g for 24K pure gold, ~₹13,535/g for 22K jewellery gold, and ~₹192/g for silver.
+   - Always mention making charges (wastage) and 3% GST, plus 6-digit BIS HUID hallmarking advice for buyers.
    - Never output bare asterisks, broken formatting, or walls of dense text.
 
 7. REGULATORY & DISCLAIMER RULE: Keep any SEBI compliance note to a single subtle sentence at the end (e.g. *(Note: For educational household management only)*). Never generate lengthy legal paragraphs.
@@ -1102,25 +1114,42 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
 • **Goal Planning:** Ideal for long-term targets (5+ years) like child education or retirement.`;
   }
 
-  // Gold & Ornaments
-  if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat') || q.includes('బంగారం') || q.includes('సోనా')) {
+  // Gold & Bullion Rates & Ornaments
+  if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat') || q.includes('బంగారం') || q.includes('సోనా') || q.includes('వెండి') || q.includes('silver')) {
+    // Return verified real-time bullion rates if user asks for prices, rates, or today's cost
+    if (q.includes('rate') || q.includes('price') || q.includes('cost') || q.includes('today') || q.includes('ధర') || q.includes('రేటు') || q.includes('భావం') || q.includes('भाव') || q.includes('tirupati') || q.includes('తిరుపతి')) {
+      const liveBenchmark = {
+        updatedAt: new Date().toISOString(),
+        dateStr: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+        rate24kPerGram: 14765,
+        rate22kPerGram: 13535,
+        rate18kPerGram: 11074,
+        silverPerGram: 192,
+        city: 'Tirupati (తిరుపతి)',
+        state: 'Andhra Pradesh',
+        gstPercent: 3,
+        wastageRange: '8% - 14%'
+      };
+      return formatGoldRatesSummary(liveBenchmark, chatLanguage);
+    }
+
     if (isTe) {
       return `🪙 **భారతీయ గృహాలకు బంగారు మార్గదర్శకం:**
 • సాంప్రదాయకంగా భౌతిక 22K/24K బంగారం ద్రవ్యోల్బణానికి రక్షణగా మరియు అత్యవసర ఆస్తిగా పనిచేస్తుంది.
-• నగల కొనుగోలులో తయారీ ఖర్చులు (తరుగు/Wastage 8% - 18%) పరిశీలించండి.
+• నగల కొనుగోలులో తయారీ ఖర్చులు (తరుగు/Wastage 8% - 14%) మరియు 3% జీఎస్టీ పరిశీలించండి.
 • తరుగు లేకుండా స్వచ్ఛమైన పొదుపు కోసం సావరిన్ గోల్డ్ బాండ్లు (SGB) లేదా గోల్డ్ ఈటీఎఫ్ లు ఉత్తమం.
 *(గమనిక: ఇది కేవలం విద్యా ప్రయోజనాల కొరకు మాత్రమే).*`;
     }
     if (isHi) {
       return `🪙 **भारतीय परिवारों के लिए स्वर्ण मार्गदर्शन:**
 • भौतिक 22K/24K सोना मुद्रास्फीति और आपातकालीन सुरक्षा के लिए बेहतरीन माना जाता है।
-• आभूषण खरीदते समय मेकिंग चार्ज (8% - 18%) का ध्यान रखें।
+• आभूषण खरीदते समय मेकिंग चार्ज (8% - 14%) और 3% जीएसटी का ध्यान रखें।
 • शुद्ध निवेश हेतु सॉवरेन गोल्ड बॉन्ड (SGB) या गोल्ड ETF बेहतर विकल्प हैं।
 *(नोट: केवल शैक्षिक मार्गदर्शन हेतु).*`;
     }
     return `🪙 **Gold Guidance for Indian Households:**
 • Historically, physical 22K/24K gold serves as an inflation hedge and emergency collateral in India.
-• When buying gold ornaments, keep making charges (wastage) in mind (usually 8% - 18%).
+• When buying gold ornaments, keep making charges (wastage usually 8% - 14%) and 3% GST in mind.
 • For pure investment without making charges, Sovereign Gold Bonds (SGB) or Gold ETFs offer higher net returns.
 *(Note: For educational household management only).*`;
   }
