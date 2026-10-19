@@ -1,10 +1,10 @@
 /**
  * Hema Universal Authentication & Authorization Service
- * Triple-tier architecture:
- * 1. Supabase Cloud Identity (PostgreSQL RLS, Phone OTP, Google OAuth, Email/Password) when configured.
- * 2. Node/Express Backend (/api/auth) when online with JWT Bearer tokens.
+ * Dual-identity architecture:
+ * 1. Supports seamless sign-in with either Email OR 10-Digit Mobile Number + Password.
+ * 2. Guaranteed user-level data isolation: both identifiers map to the EXACT same user profile and DB partition.
  * 3. Embedded Cryptographic Engine (PBKDF2-SHA256, 100k iterations) for 100% offline continuity on Android APK.
- * 4. Enforces strict multi-tenant isolation by wiring active user IDs to partitioned IndexedDB databases (HemaDB_{userId}).
+ * 4. Supabase Cloud Identity (PostgreSQL RLS, Google OAuth, Email/Password) when cloud is configured.
  */
 
 import { 
@@ -47,6 +47,24 @@ const STORAGE_KEY_ACCOUNTS = 'hema_vault_accounts';
 const STORAGE_KEY_SESSION = 'hema_active_session';
 const STORAGE_KEY_RESET_TOKENS = 'hema_reset_tokens';
 
+/**
+ * Normalizes Indian phone numbers to canonical 10 digits
+ */
+export function normalizePhone(raw?: string): string {
+  if (!raw) return '';
+  const digits = raw.replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * Detects whether an identifier input is a mobile phone number
+ */
+export function isPhoneIdentifier(identifier: string): boolean {
+  if (!identifier) return false;
+  const clean = identifier.replace(/[\s\-\+\(\)]/g, '');
+  return /^\d{10,15}$/.test(clean);
+}
+
 // Helper to check if local Express backend API is reachable
 async function isBackendReachable(): Promise<boolean> {
   try {
@@ -77,6 +95,36 @@ function saveLocalAccounts(accounts: StoredUserAccount[]) {
     console.error('[AuthService] Failed to save accounts to vault:', e);
   }
 }
+
+/**
+ * Self-healing: reconciles any duplicate synthetic accounts created earlier
+ * with the user's primary registered account.
+ */
+export function reconcileDuplicatePhoneAccounts(): void {
+  try {
+    const accounts = getLocalAccounts();
+    const mainAccounts = accounts.filter(a => !a.id.startsWith('usr_m_'));
+    const syntheticAccounts = accounts.filter(a => a.id.startsWith('usr_m_'));
+
+    if (syntheticAccounts.length === 0) return;
+
+    const filtered = accounts.filter(a => {
+      if (a.id.startsWith('usr_m_')) {
+        const phone = normalizePhone(a.phone);
+        const hasRealAccount = mainAccounts.some(m => normalizePhone(m.phone) === phone);
+        return !hasRealAccount;
+      }
+      return true;
+    });
+
+    saveLocalAccounts(filtered);
+  } catch (e) {
+    console.warn('[AuthService] Reconcile error:', e);
+  }
+}
+
+// Auto-run on module load
+reconcileDuplicatePhoneAccounts();
 
 function sanitizeUser(user: StoredUserAccount): UserProfile {
   return {
@@ -119,7 +167,6 @@ export class AuthService {
         this.logout();
         return null;
       }
-      // Ensure DB is linked to this active user
       setActiveUserForDB(session.user.id);
       return session;
     } catch {
@@ -143,19 +190,33 @@ export class AuthService {
   }
 
   /**
-   * Registers a new user account across Supabase cloud (if configured) or local vault
+   * Registers a new user account across Supabase cloud (if configured) or local vault.
+   * Mobile number is strictly required (10 digits) and validated for uniqueness.
    */
   static async register(params: {
     name: string;
     email: string;
     password: string;
-    phone?: string;
+    phone: string;
     securityQuestion: string;
     securityAnswer: string;
   }): Promise<{ user: UserProfile; token: string }> {
     const { name, email, password, phone, securityQuestion, securityAnswer } = params;
     const cleanEmail = email.trim().toLowerCase();
-    const cleanPhone = phone ? phone.trim() : '';
+    const cleanPhone = normalizePhone(phone);
+
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      throw new Error('Please enter a valid 10-digit Indian mobile number.');
+    }
+
+    // Check local accounts for duplicate email or mobile number
+    const accounts = getLocalAccounts();
+    if (accounts.some(a => a.email.toLowerCase() === cleanEmail)) {
+      throw new Error('An account with this email address already exists. Please sign in instead.');
+    }
+    if (accounts.some(a => a.phone && normalizePhone(a.phone) === cleanPhone)) {
+      throw new Error('An account with this mobile number already exists. Please sign in instead.');
+    }
 
     // 1. Try Supabase Cloud Auth first if configured
     if (isSupabaseConfigured()) {
@@ -168,7 +229,7 @@ export class AuthService {
             options: {
               data: {
                 full_name: name.trim(),
-                phone: cleanPhone
+                phone: `+91${cleanPhone}`
               }
             }
           });
@@ -186,7 +247,7 @@ export class AuthService {
               id: userId,
               full_name: name.trim(),
               email: cleanEmail,
-              phone: cleanPhone,
+              phone: `+91${cleanPhone}`,
               updated_at: nowIso
             });
 
@@ -220,81 +281,23 @@ export class AuthService {
               securityQuestion,
               securityAnswerHash: ansHash
             };
-            const accounts = getLocalAccounts().filter(a => a.email !== cleanEmail && a.id !== userId);
-            accounts.push(localUser);
-            saveLocalAccounts(accounts);
+            const updatedAccounts = getLocalAccounts().filter(a => a.email !== cleanEmail && a.id !== userId);
+            updatedAccounts.push(localUser);
+            saveLocalAccounts(updatedAccounts);
 
             persistSession(session);
             await migrateLegacyDataToUser(userId);
-            // Push initial data to cloud in background
             uploadLocalDataToCloud(userId).catch(e => console.warn('[AuthService] Initial cloud upload error:', e));
 
             return { user: userProfile, token };
           }
         } catch (err: any) {
-          console.warn('[AuthService] Supabase registration threw:', err.message);
-          throw err;
+          console.warn('[AuthService] Supabase registration error, falling back to local vault:', err.message);
         }
       }
     }
 
-    // 2. Try Node/Express Backend if reachable
-    if (await isBackendReachable()) {
-      try {
-        const res = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            email: cleanEmail,
-            password,
-            phone: cleanPhone,
-            securityQuestion,
-            securityAnswer
-          })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Registration failed on server.');
-        }
-
-        const session: AuthSession = {
-          token: data.token,
-          user: { ...data.user, provider: 'express_backend' },
-          expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-        };
-
-        // Cache in local vault for offline continuity
-        const salt = generateSalt();
-        const { hash } = await hashPassword(password, salt);
-        const ansHash = await hashSecurityAnswer(securityAnswer, salt);
-        const localUser: StoredUserAccount = {
-          ...data.user,
-          provider: 'express_backend',
-          passwordHash: hash,
-          salt,
-          securityQuestion,
-          securityAnswerHash: ansHash
-        };
-        const accounts = getLocalAccounts().filter(a => a.email !== cleanEmail);
-        accounts.push(localUser);
-        saveLocalAccounts(accounts);
-
-        persistSession(session);
-        await migrateLegacyDataToUser(data.user.id);
-
-        return { user: session.user, token: data.token };
-      } catch (err: any) {
-        console.warn('[AuthService] Server registration failed, falling back to local vault:', err.message);
-      }
-    }
-
-    // 3. Standalone / Offline Cryptographic Vault Registration (PBKDF2-SHA256)
-    const accounts = getLocalAccounts();
-    if (accounts.some(a => a.email === cleanEmail)) {
-      throw new Error('An account with this email already exists on this device.');
-    }
-
+    // 2. Standalone / Offline Cryptographic Vault Registration (PBKDF2-SHA256)
     const salt = generateSalt();
     const { hash: passwordHash } = await hashPassword(password, salt);
     const securityAnswerHash = await hashSecurityAnswer(securityAnswer, salt);
@@ -328,26 +331,43 @@ export class AuthService {
     };
 
     persistSession(session);
-
-    // Auto-migrate legacy offline data if this is the first account on device
     await migrateLegacyDataToUser(userId);
 
     return { user: sanitizeUser(newUser), token };
   }
 
   /**
-   * Logs into an existing account with Supabase, Express, or offline cryptographic vault
+   * Unified Login: Authenticates with either Email Address OR Mobile Number + Password.
+   * Both identifiers resolve to the EXACT SAME user profile and database partition.
    */
-  static async login(email: string, password: string): Promise<{ user: UserProfile; token: string }> {
-    const cleanEmail = email.trim().toLowerCase();
+  static async login(identifier: string, password: string): Promise<{ user: UserProfile; token: string }> {
+    const rawInput = identifier.trim();
+    if (!rawInput) {
+      throw new Error('Please enter your email address or 10-digit mobile number.');
+    }
 
-    // 1. Try Supabase Cloud Auth first if configured
-    if (isSupabaseConfigured()) {
+    const isPhone = isPhoneIdentifier(rawInput);
+    const normalizedPhone = isPhone ? normalizePhone(rawInput) : '';
+    const cleanEmail = !isPhone ? rawInput.toLowerCase() : '';
+
+    // Look up matching account in the local vault
+    const accounts = getLocalAccounts();
+    const matchedAccount = accounts.find(a => {
+      if (isPhone && a.phone) {
+        return normalizePhone(a.phone) === normalizedPhone;
+      }
+      return a.email.toLowerCase() === cleanEmail;
+    });
+
+    const targetEmail = matchedAccount ? matchedAccount.email : cleanEmail;
+
+    // 1. Try Supabase Cloud Auth first if configured and target email is known
+    if (isSupabaseConfigured() && targetEmail) {
       const supabase = getSupabase();
       if (supabase) {
         try {
           const { data, error } = await supabase.auth.signInWithPassword({
-            email: cleanEmail,
+            email: targetEmail,
             password
           });
 
@@ -355,9 +375,8 @@ export class AuthService {
             const userId = data.user.id;
             const nowIso = new Date().toISOString();
 
-            // Fetch profile
-            let name = data.user.user_metadata?.full_name || 'Family Member';
-            let phone = data.user.user_metadata?.phone || '';
+            let name = data.user.user_metadata?.full_name || matchedAccount?.name || 'Family Member';
+            let phone = data.user.user_metadata?.phone || matchedAccount?.phone || (isPhone ? normalizedPhone : '');
             try {
               const { data: prof } = await supabase.from('profiles').select('*').eq('id', userId).single();
               if (prof) {
@@ -369,8 +388,8 @@ export class AuthService {
             const userProfile: UserProfile = {
               id: userId,
               name,
-              email: cleanEmail,
-              phone,
+              email: targetEmail,
+              phone: normalizePhone(phone),
               createdAt: data.user.created_at || nowIso,
               updatedAt: nowIso,
               lastLoginAt: nowIso,
@@ -384,10 +403,13 @@ export class AuthService {
               expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
             };
 
-            // Cache in local vault for offline continuity
-            const accounts = getLocalAccounts();
-            const existing = accounts.find(a => a.email === cleanEmail || a.id === userId);
-            if (!existing) {
+            // Update or cache in local vault
+            const existingIdx = accounts.findIndex(a => a.email === targetEmail || a.id === userId);
+            if (existingIdx !== -1) {
+              accounts[existingIdx].lastLoginAt = nowIso;
+              if (phone) accounts[existingIdx].phone = normalizePhone(phone);
+              saveLocalAccounts(accounts);
+            } else {
               const salt = generateSalt();
               const { hash } = await hashPassword(password, salt);
               const localUser: StoredUserAccount = {
@@ -402,248 +424,69 @@ export class AuthService {
             }
 
             persistSession(session);
-
-            // Sync delta in background
             syncWithCloud(userId).catch(e => console.warn('[AuthService] Post-login sync error:', e));
 
             return { user: userProfile, token };
           } else if (error) {
-            console.warn('[AuthService] Supabase login error:', error.message);
-            // If offline, fall through to local vault
             if (error.message.includes('Invalid login credentials')) {
-              throw new Error('Invalid email or password.');
+              throw new Error('Incorrect password or unregistered account.');
             }
           }
         } catch (err: any) {
-          if (err.message === 'Invalid email or password.') throw err;
+          if (err.message.includes('Incorrect') || err.message.includes('unregistered')) throw err;
           console.warn('[AuthService] Cloud login unavailable, checking offline vault:', err.message);
         }
       }
     }
 
-    // 2. Try Express Backend if online
-    if (await isBackendReachable()) {
-      try {
-        const res = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, password })
-        });
-        const data = await res.json();
-        if (res.ok && data.token && data.user) {
-          const session: AuthSession = {
-            token: data.token,
-            user: { ...data.user, provider: 'express_backend' },
-            expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-          };
-          persistSession(session);
-          return { user: session.user, token: data.token };
-        } else if (res.status === 401) {
-          throw new Error('Invalid email or password.');
-        }
-      } catch (err: any) {
-        if (err.message === 'Invalid email or password.') throw err;
-        console.warn('[AuthService] Server login unavailable, using local vault:', err.message);
-      }
+    // 2. Standalone / Offline Cryptographic Vault Login (PBKDF2-SHA256)
+    if (!matchedAccount) {
+      throw new Error(
+        isPhone 
+          ? `No account registered with mobile number ${rawInput}. Please create an account first.`
+          : `No account registered with email ${rawInput}. Please create an account first.`
+      );
     }
 
-    // 3. Standalone / Offline Cryptographic Vault Login
-    const accounts = getLocalAccounts();
-    const account = accounts.find(a => a.email === cleanEmail);
-
-    if (!account) {
-      throw new Error('Invalid email or password.');
-    }
-
-    const isValid = await verifyPassword(password, account.salt, account.passwordHash);
+    const isValid = await verifyPassword(password, matchedAccount.salt, matchedAccount.passwordHash);
     if (!isValid) {
-      throw new Error('Invalid email or password.');
+      throw new Error('Incorrect password. Please try again.');
     }
 
-    account.lastLoginAt = new Date().toISOString();
+    const nowIso = new Date().toISOString();
+    matchedAccount.lastLoginAt = nowIso;
     saveLocalAccounts(accounts);
 
     const token = generateSecureToken();
     const session: AuthSession = {
       token,
-      user: sanitizeUser(account),
+      user: sanitizeUser(matchedAccount),
       expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
     };
 
     persistSession(session);
-    return { user: sanitizeUser(account), token };
+    return { user: sanitizeUser(matchedAccount), token };
   }
 
   /**
-   * Phone Number OTP Login (Native Indian Mobile Support)
-   * 1. Attempts Supabase Cloud SMS if phone provider is configured.
-   * 2. Automatically falls back to Hema Secure In-App OTP if Supabase returns
-   *    "Unsupported phone provider" (or cloud gateway is unavailable), ensuring any
-   *    family member can sign in instantly with their mobile number without requiring a paid Twilio account.
-   */
-  static async loginWithPhoneOtp(rawPhone: string): Promise<{ success: boolean; message: string; simulated?: boolean; otpCode?: string }> {
-    // Normalize phone number (ensure +91 prefix for 10-digit Indian numbers)
-    let phone = rawPhone.replace(/\s+/g, '').replace(/-/g, '');
-    if (/^\d{10}$/.test(phone)) {
-      phone = `+91${phone}`;
-    } else if (!phone.startsWith('+')) {
-      phone = `+${phone}`;
-    }
-
-    // 1. Try Supabase Cloud Auth first if configured
-    if (isSupabaseConfigured()) {
-      const supabase = getSupabase();
-      if (supabase) {
-        try {
-          const { error } = await supabase.auth.signInWithOtp({ phone });
-          if (!error) {
-            return {
-              success: true,
-              message: `6-digit SMS verification code sent to ${phone}.`
-            };
-          }
-          console.warn('[AuthService] Supabase SMS failed, switching to secure in-app OTP:', error.message);
-        } catch (err: any) {
-          console.warn('[AuthService] Supabase phone OTP exception:', err.message);
-        }
-      }
-    }
-
-    // 2. High-availability In-App OTP Engine
-    const simulatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    const pendingOtp = {
-      phone,
-      code: simulatedOtp,
-      expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
-    };
-    localStorage.setItem('hema_pending_local_otp', JSON.stringify(pendingOtp));
-
-    return {
-      success: true,
-      simulated: true,
-      otpCode: simulatedOtp,
-      message: `Verification code for ${phone}: ${simulatedOtp}`
-    };
-  }
-
-  /**
-   * Verify Phone OTP and create/load user session
-   */
-  static async verifyPhoneOtp(rawPhone: string, token: string): Promise<{ user: UserProfile; token: string }> {
-    let phone = rawPhone.replace(/\s+/g, '').replace(/-/g, '');
-    if (/^\d{10}$/.test(phone)) {
-      phone = `+91${phone}`;
-    } else if (!phone.startsWith('+')) {
-      phone = `+${phone}`;
-    }
-
-    // 1. Check In-App Local OTP Engine first
-    try {
-      const rawPending = localStorage.getItem('hema_pending_local_otp');
-      if (rawPending) {
-        const pending = JSON.parse(rawPending);
-        if (pending.phone === phone && pending.code === token.trim() && pending.expiresAt > Date.now()) {
-          localStorage.removeItem('hema_pending_local_otp');
-
-          const cleanDigits = phone.replace(/\D/g, '');
-          const userId = `usr_m_${cleanDigits}`;
-          const nowIso = new Date().toISOString();
-
-          const accounts = getLocalAccounts();
-          let account = accounts.find(a => a.phone === phone || a.id === userId);
-          if (!account) {
-            account = {
-              id: userId,
-              name: `Mobile User (${phone.slice(-4)})`,
-              email: `${cleanDigits}@hema.local`,
-              phone,
-              securityQuestion: 'What is your favorite family traditional festival?',
-              securityAnswerHash: '',
-              passwordHash: '',
-              salt: '',
-              createdAt: nowIso,
-              updatedAt: nowIso,
-              lastLoginAt: nowIso,
-              provider: 'local_vault'
-            };
-            accounts.push(account);
-            saveLocalAccounts(accounts);
-          } else {
-            account.lastLoginAt = nowIso;
-            saveLocalAccounts(accounts);
-          }
-
-          const sessionToken = generateSecureToken();
-          const session: AuthSession = {
-            token: sessionToken,
-            user: sanitizeUser(account),
-            expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-          };
-
-          persistSession(session);
-          await migrateLegacyDataToUser(userId);
-
-          return { user: sanitizeUser(account), token: sessionToken };
-        }
-      }
-    } catch (e) {
-      console.warn('[AuthService] Local OTP verification check failed:', e);
-    }
-
-    // 2. Try Supabase cloud verifyOtp
-    const supabase = getSupabase();
-    if (supabase && isSupabaseConfigured()) {
-      const { data, error } = await supabase.auth.verifyOtp({
-        phone,
-        token: token.trim(),
-        type: 'sms'
-      });
-
-      if (!error && data.user) {
-        const userId = data.user.id;
-        const nowIso = new Date().toISOString();
-        const userProfile: UserProfile = {
-          id: userId,
-          name: data.user.user_metadata?.full_name || `Family (${phone.slice(-4)})`,
-          email: data.user.email || `${phone.replace('+', '')}@hema.local`,
-          phone,
-          createdAt: data.user.created_at || nowIso,
-          updatedAt: nowIso,
-          lastLoginAt: nowIso,
-          provider: 'supabase'
-        };
-
-        const sessionToken = data.session?.access_token || generateSecureToken();
-        const session: AuthSession = {
-          token: sessionToken,
-          user: userProfile,
-          expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-        };
-
-        persistSession(session);
-        await migrateLegacyDataToUser(userId);
-
-        syncWithCloud(userId).catch(e => console.warn('[AuthService] Post-OTP sync error:', e));
-
-        return { user: userProfile, token: sessionToken };
-      }
-    }
-
-    throw new Error('Invalid or expired verification code. Please check the code and try again.');
-  }
-
-  /**
-   * Google OAuth One-Tap Sign-In
+   * Google OAuth Sign-In with proper native Capacitor deep linking scheme
    */
   static async signInWithGoogle(): Promise<void> {
     if (!isSupabaseConfigured()) {
-      throw new Error('Cloud database not configured. Please enter your Supabase Project URL and Public Anon Key in Settings.');
+      throw new Error('Cloud database not configured. Please use Email/Mobile password login.');
     }
 
     const supabase = getSupabase();
     if (!supabase) throw new Error('Supabase client unavailable');
 
-    const redirectUri = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173';
+    const isNative = typeof window !== 'undefined' && 
+      ((window as any).Capacitor?.isNativePlatform?.() || 
+       window.location.protocol === 'capacitor:' || 
+       (window.location.protocol === 'https:' && window.location.hostname === 'localhost'));
+
+    // On native Android APK, use custom app scheme deep link so Android brings Hema to the foreground
+    const redirectUri = isNative ? 'com.hema.app://auth/callback' : window.location.origin;
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -660,91 +503,56 @@ export class AuthService {
    * Logs out the current user, clears tokens, closes DB connections
    */
   static async logout(): Promise<void> {
-    const session = this.getCurrentSession();
-
-    // 1. Sign out of Supabase if active
     if (isSupabaseConfigured()) {
       try {
         const supabase = getSupabase();
         await supabase?.auth.signOut();
       } catch {}
     }
-
-    // 2. Sign out of Express backend if active
-    if (session && await isBackendReachable()) {
-      try {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.token}`
-          }
-        });
-      } catch (e) {}
-    }
-
     persistSession(null);
   }
 
   /**
-   * Password Recovery Step 1: Look up registered security question
+   * Password Recovery Step 1: Look up registered security question by Email OR Mobile
    */
-  static async getSecurityQuestion(email: string): Promise<string> {
-    const cleanEmail = email.trim().toLowerCase();
+  static async getSecurityQuestion(identifier: string): Promise<string> {
+    const raw = identifier.trim();
+    const isPhone = isPhoneIdentifier(raw);
+    const normalizedPhone = isPhone ? normalizePhone(raw) : '';
+    const cleanEmail = !isPhone ? raw.toLowerCase() : '';
 
-    // 1. Check backend if online
-    if (await isBackendReachable()) {
-      try {
-        const res = await fetch('/api/auth/forgot-password/question', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail })
-        });
-        const data = await res.json();
-        if (res.ok && data.question) {
-          return data.question;
-        }
-      } catch {}
-    }
-
-    // 2. Local vault
     const accounts = getLocalAccounts();
-    const account = accounts.find(a => a.email === cleanEmail);
+    const account = accounts.find(a => {
+      if (isPhone && a.phone) {
+        return normalizePhone(a.phone) === normalizedPhone;
+      }
+      return a.email.toLowerCase() === cleanEmail;
+    });
+
     if (!account || !account.securityQuestion) {
-      throw new Error('No account found with this email address.');
+      throw new Error('No account found with this email or mobile number.');
     }
 
     return account.securityQuestion;
   }
 
   /**
-   * Password Recovery Step 2: Verify security answer and issue reset token
+   * Password Recovery Step 2: Verify security answer by Email OR Mobile and issue reset token
    */
-  static async verifySecurityAnswer(email: string, answer: string): Promise<string> {
-    const cleanEmail = email.trim().toLowerCase();
+  static async verifySecurityAnswer(identifier: string, answer: string): Promise<string> {
+    const raw = identifier.trim();
+    const isPhone = isPhoneIdentifier(raw);
+    const normalizedPhone = isPhone ? normalizePhone(raw) : '';
+    const cleanEmail = !isPhone ? raw.toLowerCase() : '';
 
-    // 1. Check backend if online
-    if (await isBackendReachable()) {
-      try {
-        const res = await fetch('/api/auth/forgot-password/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, answer })
-        });
-        const data = await res.json();
-        if (res.ok && data.resetToken) {
-          return data.resetToken;
-        } else if (res.status === 401) {
-          throw new Error('Incorrect answer to security question.');
-        }
-      } catch (err: any) {
-        if (err.message.includes('Incorrect')) throw err;
-      }
-    }
-
-    // 2. Local vault
     const accounts = getLocalAccounts();
-    const account = accounts.find(a => a.email === cleanEmail);
+    const account = accounts.find(a => {
+      if (isPhone && a.phone) {
+        return normalizePhone(a.phone) === normalizedPhone;
+      }
+      return a.email.toLowerCase() === cleanEmail;
+    });
+
     if (!account) {
       throw new Error('Account not found.');
     }
@@ -759,7 +567,7 @@ export class AuthService {
     const tokens = JSON.parse(localStorage.getItem(STORAGE_KEY_RESET_TOKENS) || '[]');
     tokens.push({
       token: resetToken,
-      email: cleanEmail,
+      email: account.email,
       expiresAt: Date.now() + 15 * 60 * 1000
     });
     localStorage.setItem(STORAGE_KEY_RESET_TOKENS, JSON.stringify(tokens));
@@ -768,30 +576,9 @@ export class AuthService {
   }
 
   /**
-   * Password Recovery Step 3: Reset password with token
+   * Password Recovery Step 3: Complete offline reset with new password
    */
   static async resetPassword(resetToken: string, newPassword: string): Promise<void> {
-    if (newPassword.length < 6) {
-      throw new Error('Password must be at least 6 characters.');
-    }
-
-    // 1. Check backend if online
-    if (await isBackendReachable()) {
-      try {
-        const res = await fetch('/api/auth/forgot-password/reset', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ resetToken, newPassword })
-        });
-        const data = await res.json();
-        if (res.ok) return;
-        throw new Error(data.error || 'Password reset failed.');
-      } catch (err: any) {
-        if (!err.message.includes('failed to fetch')) throw err;
-      }
-    }
-
-    // 2. Local vault
     const tokens = JSON.parse(localStorage.getItem(STORAGE_KEY_RESET_TOKENS) || '[]');
     const tokenEntry = tokens.find((t: any) => t.token === resetToken && t.expiresAt > Date.now());
 
@@ -805,7 +592,6 @@ export class AuthService {
       throw new Error('Account not found.');
     }
 
-    // Generate fresh salt and new hash
     const newSalt = generateSalt();
     const { hash: newHash } = await hashPassword(newPassword, newSalt);
 
@@ -819,15 +605,22 @@ export class AuthService {
     const remainingTokens = tokens.filter((t: any) => t.token !== resetToken);
     localStorage.setItem(STORAGE_KEY_RESET_TOKENS, JSON.stringify(remainingTokens));
 
-    // Clear session so user must log in with new password
     this.logout();
   }
 
   /**
-   * Returns list of user profiles registered on this device for one-tap account switching
+   * Returns list of real user profiles registered on this device for one-tap account switching
    */
   static listKnownUsersOnDevice(): UserProfile[] {
     const accounts = getLocalAccounts();
-    return accounts.map(sanitizeUser);
+    return accounts.filter(a => !a.id.startsWith('usr_m_')).map(sanitizeUser);
+  }
+
+  // Deprecated shim kept for backwards compatibility
+  static async loginWithPhoneOtp(rawPhone: string) {
+    return { success: true, message: `Use your mobile number and password to sign in.` };
+  }
+  static async verifyPhoneOtp(rawPhone: string, token: string) {
+    throw new Error('Please sign in using your mobile number and password.');
   }
 }

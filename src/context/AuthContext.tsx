@@ -12,22 +12,20 @@ interface AuthContextType {
   isCloudConfigured: boolean;
   cloudSyncState: SyncState;
   knownUsers: UserProfile[];
-  login: (email: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<void>;
   register: (params: {
     name: string;
     email: string;
     password: string;
-    phone?: string;
+    phone: string;
     securityQuestion: string;
     securityAnswer: string;
   }) => Promise<void>;
-  loginWithPhoneOtp: (phone: string) => Promise<{ success: boolean; message: string; simulated?: boolean; otpCode?: string }>;
-  verifyPhoneOtp: (phone: string, token: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   triggerSync: () => Promise<void>;
-  getSecurityQuestion: (email: string) => Promise<string>;
-  verifySecurityAnswer: (email: string, answer: string) => Promise<string>;
+  getSecurityQuestion: (identifier: string) => Promise<string>;
+  verifySecurityAnswer: (identifier: string, answer: string) => Promise<string>;
   resetPassword: (resetToken: string, newPassword: string) => Promise<void>;
   refreshUsers: () => void;
 }
@@ -52,9 +50,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (session) {
       setUser(session.user);
       setToken(session.token);
-      // Auto-remediate if secondary account had cloned data
       remediatePollutedPartitions(session.user.id).catch(() => {});
-      // Auto-trigger delta sync if cloud is configured
       if (isSupabaseConfigured()) {
         syncWithCloud(session.user.id).catch(() => {});
       }
@@ -122,10 +118,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = async (identifier: string, password: string) => {
     setIsLoading(true);
     try {
-      const res = await AuthService.login(email, password);
+      const res = await AuthService.login(identifier, password);
       setUser(res.user);
       setToken(res.token);
       refreshUsers();
@@ -138,29 +134,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     name: string;
     email: string;
     password: string;
-    phone?: string;
+    phone: string;
     securityQuestion: string;
     securityAnswer: string;
   }) => {
     setIsLoading(true);
     try {
       const res = await AuthService.register(params);
-      setUser(res.user);
-      setToken(res.token);
-      refreshUsers();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const loginWithPhoneOtp = async (phone: string) => {
-    return AuthService.loginWithPhoneOtp(phone);
-  };
-
-  const verifyPhoneOtp = async (phone: string, otpToken: string) => {
-    setIsLoading(true);
-    try {
-      const res = await AuthService.verifyPhoneOtp(phone, otpToken);
       setUser(res.user);
       setToken(res.token);
       refreshUsers();
@@ -191,12 +171,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const getSecurityQuestion = async (email: string) => {
-    return AuthService.getSecurityQuestion(email);
+  const getSecurityQuestion = async (identifier: string) => {
+    return AuthService.getSecurityQuestion(identifier);
   };
 
-  const verifySecurityAnswer = async (email: string, answer: string) => {
-    return AuthService.verifySecurityAnswer(email, answer);
+  const verifySecurityAnswer = async (identifier: string, answer: string) => {
+    return AuthService.verifySecurityAnswer(identifier, answer);
   };
 
   const resetPassword = async (resetToken: string, newPassword: string) => {
@@ -215,8 +195,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         knownUsers,
         login,
         register,
-        loginWithPhoneOtp,
-        verifyPhoneOtp,
         signInWithGoogle,
         logout,
         triggerSync,
