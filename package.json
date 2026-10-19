@@ -21,6 +21,7 @@
     "@capacitor/keyboard": "^8.0.6",
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/share": "^8.0.3",
+    "@supabase/supabase-js": "^2.118.0",
     "autoprefixer": "^10.4.19",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",

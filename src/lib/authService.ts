@@ -1,9 +1,10 @@
 /**
  * Hema Universal Authentication & Authorization Service
- * Dual-tier architecture:
- * 1. Communicates with Node/Express Backend (/api/auth) when online with JWT Bearer tokens.
- * 2. Employs embedded Cryptographic Engine (PBKDF2-SHA256) when offline on native Android APK.
- * 3. Enforces strict multi-tenant isolation by wiring active user IDs to partitioned databases.
+ * Triple-tier architecture:
+ * 1. Supabase Cloud Identity (PostgreSQL RLS, Phone OTP, Google OAuth, Email/Password) when configured.
+ * 2. Node/Express Backend (/api/auth) when online with JWT Bearer tokens.
+ * 3. Embedded Cryptographic Engine (PBKDF2-SHA256, 100k iterations) for 100% offline continuity on Android APK.
+ * 4. Enforces strict multi-tenant isolation by wiring active user IDs to partitioned IndexedDB databases (HemaDB_{userId}).
  */
 
 import { 
@@ -14,6 +15,8 @@ import {
   generateSecureToken 
 } from './cryptoAuth';
 import { setActiveUserForDB, migrateLegacyDataToUser } from './db';
+import { getSupabase, isSupabaseConfigured } from './supabase';
+import { syncWithCloud, uploadLocalDataToCloud } from './syncEngine';
 
 export interface UserProfile {
   id: string;
@@ -24,6 +27,7 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string;
+  provider?: 'supabase' | 'local_vault' | 'express_backend';
 }
 
 export interface StoredUserAccount extends UserProfile {
@@ -43,7 +47,7 @@ const STORAGE_KEY_ACCOUNTS = 'hema_vault_accounts';
 const STORAGE_KEY_SESSION = 'hema_active_session';
 const STORAGE_KEY_RESET_TOKENS = 'hema_reset_tokens';
 
-// Helper to check if backend API is reachable
+// Helper to check if local Express backend API is reachable
 async function isBackendReachable(): Promise<boolean> {
   try {
     const controller = new AbortController();
@@ -83,7 +87,8 @@ function sanitizeUser(user: StoredUserAccount): UserProfile {
     securityQuestion: user.securityQuestion,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
-    lastLoginAt: user.lastLoginAt
+    lastLoginAt: user.lastLoginAt,
+    provider: user.provider || 'local_vault'
   };
 }
 
@@ -137,7 +142,7 @@ export class AuthService {
   }
 
   /**
-   * Registers a new user account with secure PBKDF2 password hashing
+   * Registers a new user account across Supabase cloud (if configured) or local vault
    */
   static async register(params: {
     name: string;
@@ -149,8 +154,90 @@ export class AuthService {
   }): Promise<{ user: UserProfile; token: string }> {
     const { name, email, password, phone, securityQuestion, securityAnswer } = params;
     const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone ? phone.trim() : '';
 
-    // 1. Try Backend API first if reachable
+    // 1. Try Supabase Cloud Auth first if configured
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password,
+            options: {
+              data: {
+                full_name: name.trim(),
+                phone: cleanPhone
+              }
+            }
+          });
+
+          if (error) {
+            throw new Error(error.message);
+          }
+
+          if (data.user) {
+            const userId = data.user.id;
+            const nowIso = new Date().toISOString();
+
+            // Upsert profile
+            await supabase.from('profiles').upsert({
+              id: userId,
+              full_name: name.trim(),
+              email: cleanEmail,
+              phone: cleanPhone,
+              updated_at: nowIso
+            });
+
+            const userProfile: UserProfile = {
+              id: userId,
+              name: name.trim(),
+              email: cleanEmail,
+              phone: cleanPhone,
+              securityQuestion,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              lastLoginAt: nowIso,
+              provider: 'supabase'
+            };
+
+            const token = data.session?.access_token || generateSecureToken();
+            const session: AuthSession = {
+              token,
+              user: userProfile,
+              expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+            };
+
+            // Cache in local vault for offline continuity
+            const salt = generateSalt();
+            const { hash } = await hashPassword(password, salt);
+            const ansHash = await hashSecurityAnswer(securityAnswer, salt);
+            const localUser: StoredUserAccount = {
+              ...userProfile,
+              passwordHash: hash,
+              salt,
+              securityQuestion,
+              securityAnswerHash: ansHash
+            };
+            const accounts = getLocalAccounts().filter(a => a.email !== cleanEmail && a.id !== userId);
+            accounts.push(localUser);
+            saveLocalAccounts(accounts);
+
+            persistSession(session);
+            await migrateLegacyDataToUser(userId);
+            // Push initial data to cloud in background
+            uploadLocalDataToCloud(userId).catch(e => console.warn('[AuthService] Initial cloud upload error:', e));
+
+            return { user: userProfile, token };
+          }
+        } catch (err: any) {
+          console.warn('[AuthService] Supabase registration threw:', err.message);
+          throw err;
+        }
+      }
+    }
+
+    // 2. Try Node/Express Backend if reachable
     if (await isBackendReachable()) {
       try {
         const res = await fetch('/api/auth/register', {
@@ -160,7 +247,7 @@ export class AuthService {
             name,
             email: cleanEmail,
             password,
-            phone,
+            phone: cleanPhone,
             securityQuestion,
             securityAnswer
           })
@@ -172,16 +259,17 @@ export class AuthService {
 
         const session: AuthSession = {
           token: data.token,
-          user: data.user,
+          user: { ...data.user, provider: 'express_backend' },
           expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
         };
 
-        // Also save to local vault for offline continuity
+        // Cache in local vault for offline continuity
         const salt = generateSalt();
         const { hash } = await hashPassword(password, salt);
         const ansHash = await hashSecurityAnswer(securityAnswer, salt);
         const localUser: StoredUserAccount = {
           ...data.user,
+          provider: 'express_backend',
           passwordHash: hash,
           salt,
           securityQuestion,
@@ -194,13 +282,13 @@ export class AuthService {
         persistSession(session);
         await migrateLegacyDataToUser(data.user.id);
 
-        return { user: data.user, token: data.token };
+        return { user: session.user, token: data.token };
       } catch (err: any) {
         console.warn('[AuthService] Server registration failed, falling back to local vault:', err.message);
       }
     }
 
-    // 2. Standalone / Offline Cryptographic Vault Registration
+    // 3. Standalone / Offline Cryptographic Vault Registration (PBKDF2-SHA256)
     const accounts = getLocalAccounts();
     if (accounts.some(a => a.email === cleanEmail)) {
       throw new Error('An account with this email already exists on this device.');
@@ -217,14 +305,15 @@ export class AuthService {
       id: userId,
       name: name.trim(),
       email: cleanEmail,
-      phone: phone ? phone.trim() : '',
+      phone: cleanPhone,
       securityQuestion: securityQuestion.trim(),
       securityAnswerHash,
       passwordHash,
       salt,
       createdAt: nowIso,
       updatedAt: nowIso,
-      lastLoginAt: nowIso
+      lastLoginAt: nowIso,
+      provider: 'local_vault'
     };
 
     accounts.push(newUser);
@@ -246,12 +335,92 @@ export class AuthService {
   }
 
   /**
-   * Logs into an existing account with timing-safe password verification
+   * Logs into an existing account with Supabase, Express, or offline cryptographic vault
    */
   static async login(email: string, password: string): Promise<{ user: UserProfile; token: string }> {
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Try Backend API first if reachable
+    // 1. Try Supabase Cloud Auth first if configured
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password
+          });
+
+          if (!error && data.user) {
+            const userId = data.user.id;
+            const nowIso = new Date().toISOString();
+
+            // Fetch profile
+            let name = data.user.user_metadata?.full_name || 'Family Member';
+            let phone = data.user.user_metadata?.phone || '';
+            try {
+              const { data: prof } = await supabase.from('profiles').select('*').eq('id', userId).single();
+              if (prof) {
+                if (prof.full_name) name = prof.full_name;
+                if (prof.phone) phone = prof.phone;
+              }
+            } catch {}
+
+            const userProfile: UserProfile = {
+              id: userId,
+              name,
+              email: cleanEmail,
+              phone,
+              createdAt: data.user.created_at || nowIso,
+              updatedAt: nowIso,
+              lastLoginAt: nowIso,
+              provider: 'supabase'
+            };
+
+            const token = data.session?.access_token || generateSecureToken();
+            const session: AuthSession = {
+              token,
+              user: userProfile,
+              expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+            };
+
+            // Cache in local vault for offline continuity
+            const accounts = getLocalAccounts();
+            const existing = accounts.find(a => a.email === cleanEmail || a.id === userId);
+            if (!existing) {
+              const salt = generateSalt();
+              const { hash } = await hashPassword(password, salt);
+              const localUser: StoredUserAccount = {
+                ...userProfile,
+                passwordHash: hash,
+                salt,
+                securityQuestion: "What is your favorite family traditional festival?",
+                securityAnswerHash: ""
+              };
+              accounts.push(localUser);
+              saveLocalAccounts(accounts);
+            }
+
+            persistSession(session);
+
+            // Sync delta in background
+            syncWithCloud(userId).catch(e => console.warn('[AuthService] Post-login sync error:', e));
+
+            return { user: userProfile, token };
+          } else if (error) {
+            console.warn('[AuthService] Supabase login error:', error.message);
+            // If offline, fall through to local vault
+            if (error.message.includes('Invalid login credentials')) {
+              throw new Error('Invalid email or password.');
+            }
+          }
+        } catch (err: any) {
+          if (err.message === 'Invalid email or password.') throw err;
+          console.warn('[AuthService] Cloud login unavailable, checking offline vault:', err.message);
+        }
+      }
+    }
+
+    // 2. Try Express Backend if online
     if (await isBackendReachable()) {
       try {
         const res = await fetch('/api/auth/login', {
@@ -263,11 +432,11 @@ export class AuthService {
         if (res.ok && data.token && data.user) {
           const session: AuthSession = {
             token: data.token,
-            user: data.user,
+            user: { ...data.user, provider: 'express_backend' },
             expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
           };
           persistSession(session);
-          return { user: data.user, token: data.token };
+          return { user: session.user, token: data.token };
         } else if (res.status === 401) {
           throw new Error('Invalid email or password.');
         }
@@ -277,7 +446,7 @@ export class AuthService {
       }
     }
 
-    // 2. Standalone / Offline Cryptographic Vault Login
+    // 3. Standalone / Offline Cryptographic Vault Login
     const accounts = getLocalAccounts();
     const account = accounts.find(a => a.email === cleanEmail);
 
@@ -305,10 +474,132 @@ export class AuthService {
   }
 
   /**
+   * Phone Number OTP Login (Native Indian Mobile Support via Supabase)
+   */
+  static async loginWithPhoneOtp(rawPhone: string): Promise<{ success: boolean; message: string }> {
+    if (!isSupabaseConfigured()) {
+      throw new Error('Cloud database not configured. Please enter your Supabase Project URL and Public Anon Key in Settings.');
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    // Normalize phone number (e.g., ensure +91 prefix for 10-digit Indian numbers)
+    let phone = rawPhone.replace(/\s+/g, '').replace(/-/g, '');
+    if (/^\d{10}$/.test(phone)) {
+      phone = `+91${phone}`;
+    } else if (!phone.startsWith('+')) {
+      phone = `+${phone}`;
+    }
+
+    const { error } = await supabase.auth.signInWithOtp({
+      phone
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return {
+      success: true,
+      message: `6-digit verification code sent to ${phone}.`
+    };
+  }
+
+  /**
+   * Verify Phone OTP and create/load user session
+   */
+  static async verifyPhoneOtp(rawPhone: string, token: string): Promise<{ user: UserProfile; token: string }> {
+    const supabase = getSupabase();
+    if (!supabase || !isSupabaseConfigured()) {
+      throw new Error('Supabase cloud service not configured.');
+    }
+
+    let phone = rawPhone.replace(/\s+/g, '').replace(/-/g, '');
+    if (/^\d{10}$/.test(phone)) {
+      phone = `+91${phone}`;
+    } else if (!phone.startsWith('+')) {
+      phone = `+${phone}`;
+    }
+
+    const { data, error } = await supabase.auth.verifyOtp({
+      phone,
+      token: token.trim(),
+      type: 'sms'
+    });
+
+    if (error || !data.user) {
+      throw new Error(error?.message || 'Invalid or expired verification code.');
+    }
+
+    const userId = data.user.id;
+    const nowIso = new Date().toISOString();
+    const userProfile: UserProfile = {
+      id: userId,
+      name: data.user.user_metadata?.full_name || `Family (${phone.slice(-4)})`,
+      email: data.user.email || `${phone.replace('+', '')}@hema.local`,
+      phone,
+      createdAt: data.user.created_at || nowIso,
+      updatedAt: nowIso,
+      lastLoginAt: nowIso,
+      provider: 'supabase'
+    };
+
+    const sessionToken = data.session?.access_token || generateSecureToken();
+    const session: AuthSession = {
+      token: sessionToken,
+      user: userProfile,
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+    };
+
+    persistSession(session);
+    await migrateLegacyDataToUser(userId);
+
+    // Sync in background
+    syncWithCloud(userId).catch(e => console.warn('[AuthService] Post-OTP sync error:', e));
+
+    return { user: userProfile, token: sessionToken };
+  }
+
+  /**
+   * Google OAuth One-Tap Sign-In
+   */
+  static async signInWithGoogle(): Promise<void> {
+    if (!isSupabaseConfigured()) {
+      throw new Error('Cloud database not configured. Please enter your Supabase Project URL and Public Anon Key in Settings.');
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const redirectUri = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173';
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUri
+      }
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+
+  /**
    * Logs out the current user, clears tokens, closes DB connections
    */
   static async logout(): Promise<void> {
     const session = this.getCurrentSession();
+
+    // 1. Sign out of Supabase if active
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase?.auth.signOut();
+      } catch {}
+    }
+
+    // 2. Sign out of Express backend if active
     if (session && await isBackendReachable()) {
       try {
         await fetch('/api/auth/logout', {

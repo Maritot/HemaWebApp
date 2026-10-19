@@ -17,7 +17,13 @@ import {
   FileText, 
   Database, 
   RefreshCw,
-  Share2
+  Share2,
+  Copy,
+  ExternalLink,
+  Smartphone,
+  Cloud,
+  CheckCircle2,
+  Settings as SettingsIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -43,9 +49,105 @@ import {
   checkNotificationPermission 
 } from '@/lib/notifications';
 import { useAuth } from '@/context/AuthContext';
+import { 
+  isSupabaseConfigured, 
+  getSupabaseConfig, 
+  saveSupabaseCredentials, 
+  clearSupabaseCredentials, 
+  testSupabaseConnection 
+} from '@/lib/supabase';
+
+const SCHEMA_SQL_SNIPPET = `-- Run this in Supabase SQL Editor:
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name TEXT NOT NULL,
+  email TEXT, phone TEXT,
+  avatar_url TEXT, currency TEXT DEFAULT 'INR',
+  locale TEXT DEFAULT 'te',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own profile" ON public.profiles FOR ALL USING (auth.uid() = id);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  amount NUMERIC(12, 2) NOT NULL,
+  category_id TEXT NOT NULL,
+  label TEXT, type TEXT NOT NULL,
+  date BIGINT NOT NULL, notes TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  is_deleted BOOLEAN DEFAULT FALSE
+);
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own transactions" ON public.transactions FOR ALL USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS public.debts (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  person TEXT NOT NULL, avatar_url TEXT,
+  principal_amount NUMERIC(12, 2) NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL,
+  type TEXT NOT NULL, status TEXT NOT NULL,
+  interest_type TEXT DEFAULT 'NONE',
+  interest_rate NUMERIC(6, 2) DEFAULT 0,
+  custom_formula TEXT, tenure_months INT DEFAULT 0,
+  interest_amount NUMERIC(12, 2) DEFAULT 0,
+  due_date BIGINT NOT NULL, date_created BIGINT NOT NULL,
+  notes TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  is_deleted BOOLEAN DEFAULT FALSE
+);
+ALTER TABLE public.debts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own debts" ON public.debts FOR ALL USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS public.debt_payments (
+  id TEXT PRIMARY KEY,
+  debt_id TEXT NOT NULL REFERENCES public.debts(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  amount NUMERIC(12, 2) NOT NULL, date BIGINT NOT NULL,
+  mode TEXT DEFAULT 'Cash', notes TEXT DEFAULT '',
+  proof_photo TEXT, location JSONB, timestamp_verified BIGINT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  is_deleted BOOLEAN DEFAULT FALSE
+);
+ALTER TABLE public.debt_payments ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own payments" ON public.debt_payments FOR ALL USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS public.gifts (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  person_id TEXT, person TEXT NOT NULL, occasion TEXT NOT NULL,
+  type TEXT NOT NULL, category TEXT NOT NULL, item TEXT NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL, weight_grams NUMERIC(8, 2), purity TEXT,
+  date BIGINT NOT NULL, notes TEXT DEFAULT '', photo_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  is_deleted BOOLEAN DEFAULT FALSE
+);
+ALTER TABLE public.gifts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own gifts" ON public.gifts FOR ALL USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS public.people (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, relationship TEXT DEFAULT 'Family',
+  phone TEXT, avatar_url TEXT, notes TEXT DEFAULT '',
+  created_at BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  is_deleted BOOLEAN DEFAULT FALSE
+);
+ALTER TABLE public.people ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users access own people" ON public.people FOR ALL USING (auth.uid() = user_id);
+`;
 
 const Settings: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const { user, logout, knownUsers, isCloudConfigured, cloudSyncState, triggerSync } = useAuth();
 
   const languages = [
     { code: 'en', label: 'English' },
@@ -57,6 +159,7 @@ const Settings: React.FC = () => {
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [showBackupModal, setShowBackupModal] = useState(false);
+  const [showCloudModal, setShowCloudModal] = useState(false);
 
   // Security Form State
   const [pinEnabled, setPinEnabledState] = useState(isPinEnabled());
@@ -72,12 +175,23 @@ const Settings: React.FC = () => {
   // Backup State
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
 
+  // Cloud Sync State
+  const [cloudUrl, setCloudUrl] = useState('');
+  const [cloudKey, setCloudKey] = useState('');
+  const [testStatus, setTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean } | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
   useEffect(() => {
     checkNotificationPermission().then(granted => {
       setDeviceAlertsActive(granted);
     });
     loadDebtAlerts();
-  }, []);
+
+    const config = getSupabaseConfig();
+    setCloudUrl(config.url);
+    setCloudKey(config.anonKey);
+  }, [showCloudModal]);
 
   const loadDebtAlerts = async () => {
     const debts = await getDebts();
@@ -248,55 +362,124 @@ const Settings: React.FC = () => {
             item: 'Gold Ring',
             weightGrams: 8,
             purity: '22K',
-            amount: 60000,
+            amount: 62000,
             date: Date.now() - 60 * 86400000,
-            notes: 'Gifted at elder daughter wedding'
-          },
-          {
-            id: 'gift_sample_02',
-            person: 'Suresh Cousin',
-            personId: 'person_sample_02',
-            occasion: 'Housewarming (गृहप्रवेश / గృహప్రవేశం)',
-            type: 'GIVEN',
-            category: 'SILVER',
-            item: 'Silver Diya Pair',
-            weightGrams: 100,
-            purity: '92.5 Sterling',
-            amount: 9500,
-            date: Date.now() - 15 * 86400000,
-            notes: 'Given for new home entry'
+            notes: 'Blessed wedding gift'
           }
         ]
       };
+
       await restoreFullBackup(samplePayload);
-      setBackupStatus('✅ Sample test data loaded successfully! Refreshing...');
-      setTimeout(() => window.location.reload(), 1000);
-    } catch (err: any) {
-      setBackupStatus(`❌ Load sample failed: ${err.message}`);
+      setBackupStatus('✅ Realistic sample ledger loaded successfully! Refreshing...');
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e: any) {
+      setBackupStatus(`❌ Load sample failed: ${e.message}`);
     }
   };
 
-  // Native Notification Requests & Status Bar Trigger
+  // Cloud Sync Handler
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    try {
+      await triggerSync();
+      setInAppAlert('Cloud synchronization complete! Records up to date.');
+    } catch (err: any) {
+      setInAppAlert(`Sync failed: ${err.message || 'Offline'}`);
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setInAppAlert(null), 3500);
+    }
+  };
+
+  const handleTestCloudConnection = async () => {
+    setTestStatus({ testing: true });
+    saveSupabaseCredentials(cloudUrl, cloudKey);
+    const res = await testSupabaseConnection();
+    setTestStatus({ testing: false, message: res.message, success: res.success });
+  };
+
+  const handleSaveCloudCredentials = (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = saveSupabaseCredentials(cloudUrl, cloudKey);
+    if (ok) {
+      setInAppAlert('✅ Cloud credentials saved! Multi-device sync enabled.');
+      setShowCloudModal(false);
+    } else {
+      setInAppAlert('❌ Invalid URL or Anon Key. Please check your credentials.');
+    }
+    setTimeout(() => setInAppAlert(null), 3500);
+  };
+
+  const handleClearCloudCredentials = () => {
+    if (window.confirm('Disconnect from Supabase cloud? The app will operate in local offline vault mode.')) {
+      clearSupabaseCredentials();
+      setCloudUrl('');
+      setCloudKey('');
+      setShowCloudModal(false);
+      setInAppAlert('Switched to local offline vault mode.');
+      setTimeout(() => setInAppAlert(null), 3500);
+    }
+  };
+
+  const handleCopySchema = () => {
+    navigator.clipboard.writeText(SCHEMA_SQL_SNIPPET);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2500);
+  };
+
+  // PIN security actions
+  const handleSetPin = () => {
+    if (pinInput.length !== 4 || isNaN(Number(pinInput))) {
+      setSecurityMessage('PIN must be exactly 4 digits');
+      return;
+    }
+    if (pinInput !== confirmPinInput) {
+      setSecurityMessage('PINs do not match');
+      return;
+    }
+    setPin(pinInput);
+    setPinEnabledState(true);
+    setPinInput('');
+    setConfirmPinInput('');
+    setSecurityMessage('PIN enabled successfully! Your app is now locked with a 4-digit PIN.');
+  };
+
+  const handleDisablePin = () => {
+    if (!verifyPin(pinInput)) {
+      setSecurityMessage('Incorrect PIN. Cannot disable.');
+      return;
+    }
+    disablePin();
+    setPinEnabledState(false);
+    setPinInput('');
+    setSecurityMessage('PIN protection disabled.');
+  };
+
+  const handleLockNow = () => {
+    setShowSecurityModal(false);
+    window.dispatchEvent(new Event('hema:lock'));
+  };
+
+  // Notification actions
   const handleEnableAlerts = async () => {
     const granted = await requestNativeNotifPermission();
     setDeviceAlertsActive(granted);
     if (granted) {
       await triggerSystemNotification({
-        title: '🔔 Hema Financial Alerts Enabled',
-        body: 'You will receive status bar reminders for upcoming loan due dates and family gifts.'
+        title: 'Hema Financial Alerts Enabled',
+        body: 'You will receive status bar alerts for urgent loan repayments and budget thresholds.'
       });
-      setInAppAlert('🔔 Native alert sent to your Android status bar!');
+      setInAppAlert('Notifications enabled! A confirmation notification was sent to your status bar.');
     } else {
-      setInAppAlert('⚠️ Please grant notification permission in device Settings to receive alerts.');
+      setInAppAlert('Notification permission was not granted by your device settings.');
     }
-    setTimeout(() => setInAppAlert(null), 4500);
+    setTimeout(() => setInAppAlert(null), 4000);
   };
 
   const handleTestAlert = async () => {
-    await requestNativeNotifPermission();
     const sent = await triggerSystemNotification({
-      title: '🔔 Hema Loan Due Alert',
-      body: 'Reminder: Ramesh Uncle loan repayment of ₹10,000 is due in 3 days!'
+      title: 'Hema Urgent Loan Alert',
+      body: 'Reminder: Ramesh Uncle repayment of ₹10,000 is due in 3 days!'
     });
     if (sent) {
       setInAppAlert('🔔 System notification sent to your device status bar outside the app!');
@@ -305,8 +488,6 @@ const Settings: React.FC = () => {
     }
     setTimeout(() => setInAppAlert(null), 4500);
   };
-
-  const { user, logout, knownUsers } = useAuth();
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
@@ -364,6 +545,70 @@ const Settings: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* Cloud Multi-Device Sync Card */}
+      <Card className="border border-slate-200 shadow-2xs overflow-hidden bg-white">
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-2.5">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold ${
+                isCloudConfigured ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+              }`}>
+                <Cloud size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">Cloud Sync & Multi-Device</h3>
+                <p className="text-[11px] text-slate-500">Supabase PostgreSQL with Row-Level Security</p>
+              </div>
+            </div>
+
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              isCloudConfigured ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+            }`}>
+              {isCloudConfigured ? 'Cloud Active' : 'Offline Vault'}
+            </span>
+          </div>
+
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 mb-3 text-xs flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+              <span className="text-slate-500 block text-[10px] uppercase font-bold tracking-wider">Sync Status:</span>
+              <span className="font-semibold text-slate-800 truncate block">
+                {cloudSyncState.status === 'syncing' ? '🔄 Synchronizing with cloud...' :
+                 cloudSyncState.status === 'synced' ? '✅ All records up to date' :
+                 cloudSyncState.status === 'error' ? `⚠️ Error: ${cloudSyncState.errorMessage}` :
+                 isCloudConfigured ? 'Cloud connected (idle)' : 'Local offline storage (no cloud configured)'}
+              </span>
+              {cloudSyncState.lastSyncedAt && (
+                <span className="text-[10px] text-slate-400">
+                  Last synced: {new Date(cloudSyncState.lastSyncedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center space-x-2 ml-3">
+              {isCloudConfigured && (
+                <button
+                  type="button"
+                  disabled={isSyncing}
+                  onClick={handleManualSync}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-xs shadow-xs transition-colors flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
+                  <span>Sync Now</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowCloudModal(true)}
+                className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg font-bold text-xs transition-colors flex items-center space-x-1 cursor-pointer"
+              >
+                <SettingsIcon size={12} />
+                <span>{isCloudConfigured ? 'Configure' : 'Connect Cloud'}</span>
+              </button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="space-y-4">
         {/* Language Selection */}
@@ -457,64 +702,60 @@ const Settings: React.FC = () => {
               )}
 
               <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-borderLight">
-                  <div className="flex items-center space-x-2">
-                    {pinEnabled ? <Lock size={16} className="text-green-600" /> : <Unlock size={16} className="text-textMuted" />}
-                    <span className="text-xs font-semibold text-textMain">PIN Protection Status:</span>
-                  </div>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${pinEnabled ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-700'}`}>
-                    {pinEnabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-
                 {!pinEnabled ? (
                   <>
+                    <p className="text-xs text-textMuted">
+                      Set a 4-digit PIN to prevent unauthorized access when lending your phone to others.
+                    </p>
                     <div>
-                      <label className="text-xs font-semibold text-textMuted">Set 4-Digit PIN</label>
+                      <label className="text-xs font-bold text-textMain mb-1 block">New 4-Digit PIN</label>
                       <input 
-                        type="password" 
+                        type="password"
                         maxLength={4}
-                        inputMode="numeric"
-                        value={pinInput} 
+                        value={pinInput}
                         onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
-                        placeholder="••••" 
-                        className="w-full mt-1 p-3 text-center tracking-widest text-lg font-bold bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none" 
+                        className="w-full text-center text-xl tracking-widest p-2.5 rounded-xl border border-borderLight focus:border-primary-500 focus:outline-none bg-surface"
+                        placeholder="••••"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-semibold text-textMuted">Confirm 4-Digit PIN</label>
+                      <label className="text-xs font-bold text-textMain mb-1 block">Confirm PIN</label>
                       <input 
-                        type="password" 
+                        type="password"
                         maxLength={4}
-                        inputMode="numeric"
-                        value={confirmPinInput} 
+                        value={confirmPinInput}
                         onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, ''))}
-                        placeholder="••••" 
-                        className="w-full mt-1 p-3 text-center tracking-widest text-lg font-bold bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none" 
+                        className="w-full text-center text-xl tracking-widest p-2.5 rounded-xl border border-borderLight focus:border-primary-500 focus:outline-none bg-surface"
+                        placeholder="••••"
                       />
                     </div>
                     <button 
-                      onClick={handleSavePin}
+                      onClick={handleSetPin}
                       disabled={pinInput.length !== 4 || confirmPinInput.length !== 4}
-                      className="w-full py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs disabled:opacity-50 transition-colors shadow-soft"
+                      className="w-full py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs shadow-soft disabled:opacity-50 transition-colors"
                     >
-                      Enable Security PIN
+                      Enable App PIN Lock
                     </button>
                   </>
                 ) : (
                   <>
+                    <div className="p-3 bg-green-50 border border-green-200 rounded-xl flex items-center space-x-2 text-green-800 text-xs font-semibold">
+                      <Lock size={16} className="text-green-600 shrink-0" />
+                      <span>PIN Protection is Currently ACTIVE</span>
+                    </div>
+
                     <div>
-                      <label className="text-xs font-semibold text-textMuted">Enter Current PIN to Disable</label>
+                      <label className="text-xs font-bold text-textMain mb-1 block">Enter Current PIN to Disable or Lock</label>
                       <input 
-                        type="password" 
+                        type="password"
                         maxLength={4}
-                        inputMode="numeric"
-                        value={pinInput} 
+                        value={pinInput}
                         onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
-                        placeholder="••••" 
-                        className="w-full mt-1 p-3 text-center tracking-widest text-lg font-bold bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none" 
+                        className="w-full text-center text-xl tracking-widest p-2.5 rounded-xl border border-borderLight focus:border-primary-500 focus:outline-none bg-surface"
+                        placeholder="••••"
                       />
                     </div>
+
                     <div className="flex space-x-2">
                       <button 
                         onClick={handleLockNow}
@@ -647,7 +888,7 @@ const Settings: React.FC = () => {
                 {/* Export JSON Button */}
                 <button
                   onClick={handleExportJSON}
-                  className="w-full p-3.5 bg-surface border border-borderLight hover:border-primary-400 rounded-xl flex items-center space-x-3 text-left transition-colors group"
+                  className="w-full p-3.5 bg-surface border border-borderLight hover:border-primary-400 rounded-xl flex items-center space-x-3 text-left transition-colors group cursor-pointer"
                 >
                   <div className="w-10 h-10 rounded-full bg-primary-50 text-primary-600 flex items-center justify-center shrink-0">
                     <Download size={18} />
@@ -674,7 +915,7 @@ const Settings: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleLoadSampleBackup}
-                  className="w-full p-3.5 bg-amber-50/60 border border-amber-200 hover:border-amber-400 rounded-xl flex items-center space-x-3 text-left transition-colors group"
+                  className="w-full p-3.5 bg-amber-50/60 border border-amber-200 hover:border-amber-400 rounded-xl flex items-center space-x-3 text-left transition-colors group cursor-pointer"
                 >
                   <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
                     <RefreshCw size={18} />
@@ -695,6 +936,118 @@ const Settings: React.FC = () => {
                   <p>2. On another phone, open Hema and tap <strong>Restore from JSON File</strong>.</p>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        </div>,
+        document.body
+      )}
+
+      {/* ================= MODAL 4: CLOUD CONFIGURATION & SQL SETUP ================= */}
+      {showCloudModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <Card className="w-full max-w-md border-none shadow-2xl bg-surface animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+            <CardContent className="p-6">
+              <div className="flex justify-between items-center mb-4 pb-2 border-b border-borderLight">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold">
+                    <Globe size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-textMain text-base">Supabase Cloud Database</h3>
+                    <p className="text-xs text-textMuted">PostgreSQL with Row-Level Security</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowCloudModal(false)} className="text-textMuted hover:text-textMain p-1">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveCloudCredentials} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Supabase Project URL
+                  </label>
+                  <input
+                    type="url"
+                    required
+                    value={cloudUrl}
+                    onChange={e => setCloudUrl(e.target.value)}
+                    placeholder="https://your-project-id.supabase.co"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Supabase Public Anon Key
+                  </label>
+                  <textarea
+                    required
+                    rows={3}
+                    value={cloudKey}
+                    onChange={e => setCloudKey(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                {testStatus && (
+                  <div className={`p-3 rounded-xl text-xs font-medium ${
+                    testStatus.testing 
+                      ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                      : testStatus.success 
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
+                        : 'bg-red-50 text-red-800 border border-red-200'
+                  }`}>
+                    {testStatus.testing ? 'Testing connection to Supabase...' : testStatus.message}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTestCloudConnection}
+                    disabled={!cloudUrl || !cloudKey || testStatus?.testing}
+                    className="flex-1 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    Test Ping
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!cloudUrl || !cloudKey}
+                    className="flex-1 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                  >
+                    Save & Connect
+                  </button>
+                  {isCloudConfigured && (
+                    <button
+                      type="button"
+                      onClick={handleClearCloudCredentials}
+                      className="py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl font-bold text-xs transition-colors cursor-pointer"
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+
+                {/* SQL Schema 1-Click Copy */}
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 text-xs">Database Schema (SQL):</span>
+                    <button
+                      type="button"
+                      onClick={handleCopySchema}
+                      className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-bold text-[10px] flex items-center space-x-1 transition-colors cursor-pointer"
+                    >
+                      {copySuccess ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                      <span>{copySuccess ? 'Copied!' : 'Copy SQL Schema'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Paste this SQL in your <strong>Supabase Dashboard → SQL Editor</strong> to create all tables with Row-Level Security policies.
+                  </p>
+                </div>
+              </form>
             </CardContent>
           </Card>
         </div>,

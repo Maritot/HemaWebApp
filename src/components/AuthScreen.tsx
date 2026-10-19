@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Lock, 
   Mail, 
@@ -12,9 +12,22 @@ import {
   ArrowRight, 
   CheckCircle2, 
   AlertCircle,
-  Users
+  Users,
+  Smartphone,
+  Globe,
+  Settings,
+  Sparkles,
+  ExternalLink,
+  RefreshCw,
+  X
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { 
+  isSupabaseConfigured, 
+  getSupabaseConfig, 
+  saveSupabaseCredentials, 
+  testSupabaseConnection 
+} from '@/lib/supabase';
 
 const SECURITY_QUESTIONS = [
   "What is your mother's maiden name?",
@@ -25,9 +38,20 @@ const SECURITY_QUESTIONS = [
 ];
 
 export const AuthScreen: React.FC = () => {
-  const { login, register, getSecurityQuestion, verifySecurityAnswer, resetPassword, knownUsers } = useAuth();
+  const { 
+    login, 
+    register, 
+    loginWithPhoneOtp, 
+    verifyPhoneOtp, 
+    signInWithGoogle, 
+    getSecurityQuestion, 
+    verifySecurityAnswer, 
+    resetPassword, 
+    knownUsers,
+    isCloudConfigured 
+  } = useAuth();
 
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'otp'>('signin');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -48,6 +72,17 @@ export const AuthScreen: React.FC = () => {
   const [signUpQuestion, setSignUpQuestion] = useState(SECURITY_QUESTIONS[0]);
   const [signUpAnswer, setSignUpAnswer] = useState('');
 
+  // Phone OTP State
+  const [otpPhone, setOtpPhone] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+
+  // Cloud Config Modal State
+  const [showCloudModal, setShowCloudModal] = useState(false);
+  const [cloudUrl, setCloudUrl] = useState('');
+  const [cloudKey, setCloudKey] = useState('');
+  const [testStatus, setTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean } | null>(null);
+
   // Forgot Password State
   const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(1);
   const [forgotEmail, setForgotEmail] = useState('');
@@ -56,6 +91,12 @@ export const AuthScreen: React.FC = () => {
   const [resetToken, setResetToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  useEffect(() => {
+    const config = getSupabaseConfig();
+    setCloudUrl(config.url);
+    setCloudKey(config.anonKey);
+  }, [showCloudModal]);
 
   const clearAlerts = () => {
     setErrorMessage(null);
@@ -122,6 +163,79 @@ export const AuthScreen: React.FC = () => {
       setErrorMessage(err.message || 'Registration failed.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Phone OTP Handlers
+  const handleSendOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearAlerts();
+
+    const clean = otpPhone.replace(/\D/g, '');
+    if (clean.length < 10) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await loginWithPhoneOtp(otpPhone);
+      setOtpSent(true);
+      setSuccessMessage(res.message);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to send OTP code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearAlerts();
+
+    if (otpCode.trim().length < 6) {
+      setErrorMessage('Please enter the 6-digit verification code.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await verifyPhoneOtp(otpPhone, otpCode.trim());
+      setSuccessMessage('Mobile verified! Entering your secure personal ledger...');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Invalid or expired OTP code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Google OAuth Handler
+  const handleGoogleSignIn = async () => {
+    clearAlerts();
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Google sign-in requires Supabase cloud configuration.');
+    }
+  };
+
+  // Cloud Config Modal Handlers
+  const handleTestCloudConnection = async () => {
+    setTestStatus({ testing: true });
+    // Temporarily save to test
+    saveSupabaseCredentials(cloudUrl, cloudKey);
+    const res = await testSupabaseConnection();
+    setTestStatus({ testing: false, message: res.message, success: res.success });
+  };
+
+  const handleSaveCloudCredentials = (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = saveSupabaseCredentials(cloudUrl, cloudKey);
+    if (ok) {
+      setSuccessMessage('Cloud credentials saved successfully! Multi-device sync active.');
+      setShowCloudModal(false);
+    } else {
+      setErrorMessage('Please enter a valid Supabase Project URL and Anon Public Key.');
     }
   };
 
@@ -198,12 +312,30 @@ export const AuthScreen: React.FC = () => {
       {/* Background Glow */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl" />
-        <div className="absolute -bottom-32 left-1/2 -translate-x-1/2 w-96 h-96 bg-primary-600/15 rounded-full blur-3xl" />
+        <div className="absolute -bottom-32 left-1/2 -translate-x-1/2 w-96 h-96 bg-amber-600/15 rounded-full blur-3xl" />
       </div>
 
       <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden relative z-10 animate-in fade-in zoom-in-95 duration-200">
         {/* Header Branding */}
         <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 text-white p-6 sm:p-7 text-center relative border-b-2 border-amber-500">
+          {/* Cloud Status Pill Button */}
+          <div className="absolute top-4 right-4">
+            <button
+              type="button"
+              onClick={() => setShowCloudModal(true)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                isCloudConfigured
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                  : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+              }`}
+              title="Cloud Database & Multi-Device Access Settings"
+            >
+              <Globe size={11} className={isCloudConfigured ? 'text-emerald-400' : 'text-amber-400'} />
+              <span>{isCloudConfigured ? 'Cloud Active' : 'Offline Vault'}</span>
+              <Settings size={10} className="opacity-60 ml-0.5" />
+            </button>
+          </div>
+
           <div className="flex justify-center mb-3">
             <div className="w-16 h-16 rounded-2xl bg-slate-800/80 border border-amber-500/40 p-2 shadow-inner flex items-center justify-center">
               <img 
@@ -238,7 +370,19 @@ export const AuthScreen: React.FC = () => {
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              Sign In
+              Email Login
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('otp'); clearAlerts(); }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                mode === 'otp' 
+                  ? 'bg-white text-slate-900 shadow-xs border border-slate-200/80' 
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Smartphone size={13} />
+              <span>Mobile OTP</span>
             </button>
             <button
               type="button"
@@ -302,7 +446,7 @@ export const AuthScreen: React.FC = () => {
             </div>
           )}
 
-          {/* --- SIGN IN FORM --- */}
+          {/* --- EMAIL SIGN IN FORM --- */}
           {mode === 'signin' && (
             <form onSubmit={handleSignIn} className="space-y-4">
               <div>
@@ -364,19 +508,118 @@ export const AuthScreen: React.FC = () => {
                 {!loading && <ArrowRight size={16} />}
               </button>
 
-              <div className="text-center pt-2">
-                <p className="text-xs text-slate-500">
-                  New to Hema?{' '}
+              {/* Google OAuth Option */}
+              {isCloudConfigured && (
+                <div className="pt-2">
+                  <div className="relative my-3">
+                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200" /></div>
+                    <div className="relative flex justify-center text-[10px] uppercase font-bold text-slate-400"><span className="bg-white px-2">Or continue with</span></div>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => { setMode('signup'); clearAlerts(); }}
-                    className="font-bold text-amber-700 hover:underline cursor-pointer"
+                    onClick={handleGoogleSignIn}
+                    className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
                   >
-                    Create a personal account
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                    </svg>
+                    <span>Sign in with Google</span>
                   </button>
-                </p>
-              </div>
+                </div>
+              )}
             </form>
+          )}
+
+          {/* --- MOBILE NUMBER OTP FORM --- */}
+          {mode === 'otp' && (
+            <div className="space-y-4">
+              {!otpSent ? (
+                <form onSubmit={handleSendOtp} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                      Indian Mobile Number
+                    </label>
+                    <div className="relative flex">
+                      <div className="flex items-center justify-center px-3 bg-slate-100 border border-r-0 border-slate-200 rounded-l-xl text-xs font-bold text-slate-700">
+                        🇮🇳 +91
+                      </div>
+                      <input
+                        type="tel"
+                        required
+                        maxLength={10}
+                        value={otpPhone}
+                        onChange={e => setOtpPhone(e.target.value.replace(/\D/g, ''))}
+                        placeholder="98765 43210"
+                        className="w-full pl-3 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-r-xl text-xs sm:text-sm font-semibold tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1.5">
+                      We will send a 6-digit SMS verification code to your mobile phone.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || otpPhone.length < 10}
+                    className="w-full py-3 px-4 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center space-x-2 cursor-pointer"
+                  >
+                    <span>{loading ? 'Sending Code...' : 'Send SMS Verification Code'}</span>
+                    {!loading && <ArrowRight size={16} />}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyOtp} className="space-y-4">
+                  <div>
+                    <div className="flex justify-between items-center mb-1.5">
+                      <label className="text-xs font-bold text-slate-700">
+                        Enter 6-Digit OTP Code
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => { setOtpSent(false); setOtpCode(''); }}
+                        className="text-[11px] font-semibold text-amber-700 hover:underline"
+                      >
+                        Change Number (+91 {otpPhone})
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      maxLength={6}
+                      autoFocus
+                      value={otpCode}
+                      onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                      placeholder="• • • • • •"
+                      className="w-full text-center py-3 bg-slate-50 border border-slate-200 rounded-xl text-lg font-black tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || otpCode.length < 6}
+                    className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center space-x-2 cursor-pointer"
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>{loading ? 'Verifying...' : 'Verify & Enter Ledger'}</span>
+                  </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={handleSendOtp}
+                      className="text-xs font-bold text-slate-500 hover:text-amber-700 flex items-center justify-center gap-1 mx-auto"
+                    >
+                      <RefreshCw size={12} />
+                      <span>Resend SMS Code</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           )}
 
           {/* --- CREATE ACCOUNT FORM --- */}
@@ -449,13 +692,12 @@ export const AuthScreen: React.FC = () => {
                     />
                   </div>
                 </div>
-
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Confirm Password
                   </label>
                   <div className="relative">
-                    <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Key size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
@@ -468,201 +710,260 @@ export const AuthScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Password Recovery Config */}
-              <div className="pt-2 border-t border-slate-100">
-                <div className="flex items-center space-x-1 text-[11px] font-bold text-amber-950 mb-1.5">
-                  <HelpCircle size={13} className="text-amber-600" />
-                  <span>Security Recovery Question:</span>
-                </div>
+              <div className="pt-1">
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Security Recovery Question (Offline Reset)
+                </label>
                 <select
                   value={signUpQuestion}
                   onChange={e => setSignUpQuestion(e.target.value)}
-                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 mb-2"
+                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                 >
                   {SECURITY_QUESTIONS.map(q => (
                     <option key={q} value={q}>{q}</option>
                   ))}
                 </select>
+              </div>
 
-                <input
-                  type="text"
-                  required
-                  value={signUpAnswer}
-                  onChange={e => setSignUpAnswer(e.target.value)}
-                  placeholder="Your secret answer (used if password is forgotten)"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
-                />
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Answer
+                </label>
+                <div className="relative">
+                  <HelpCircle size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    required
+                    value={signUpAnswer}
+                    onChange={e => setSignUpAnswer(e.target.value)}
+                    placeholder="Your secret answer"
+                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                  />
+                </div>
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center space-x-2 cursor-pointer"
+                className="w-full mt-3 py-3 px-4 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center space-x-2 cursor-pointer"
               >
-                <span>{loading ? 'Creating Account...' : 'Create Secured Account'}</span>
+                <span>{loading ? 'Creating Isolated Partition...' : 'Create Secured Account'}</span>
                 {!loading && <ArrowRight size={16} />}
               </button>
-
-              <div className="text-center pt-1">
-                <p className="text-xs text-slate-500">
-                  Already have an account?{' '}
-                  <button
-                    type="button"
-                    onClick={() => { setMode('signin'); clearAlerts(); }}
-                    className="font-bold text-amber-700 hover:underline cursor-pointer"
-                  >
-                    Sign In
-                  </button>
-                </p>
-              </div>
             </form>
           )}
 
-          {/* --- PASSWORD RECOVERY (FORGOT PASSWORD) --- */}
+          {/* --- FORGOT PASSWORD WIZARD --- */}
           {mode === 'forgot' && (
             <div className="space-y-4">
-              <div className="flex items-center space-x-2 text-slate-900 font-bold text-sm mb-1">
-                <Key size={18} className="text-amber-600" />
-                <span>Account Recovery Wizard</span>
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center space-x-2">
+                  <Key size={16} className="text-amber-600" />
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900">
+                    3-Step Password Recovery
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setMode('signin'); clearAlerts(); setForgotStep(1); }}
+                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
+                >
+                  Back to Login
+                </button>
               </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Step {forgotStep} of 3: {
-                  forgotStep === 1 
-                    ? 'Verify your account email' 
-                    : forgotStep === 2 
-                    ? 'Answer your secret security question' 
-                    : 'Set a new secure password'
-                }
-              </p>
 
-              {/* Step 1: Email */}
               {forgotStep === 1 && (
-                <form onSubmit={handleForgotStep1} className="space-y-4">
+                <form onSubmit={handleForgotStep1} className="space-y-3.5">
+                  <p className="text-xs text-slate-500">
+                    Step 1: Enter your registered email address to retrieve your security question.
+                  </p>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Registered Email
-                    </label>
-                    <div className="relative">
-                      <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="email"
-                        required
-                        value={forgotEmail}
-                        onChange={e => setForgotEmail(e.target.value)}
-                        placeholder="yourname@family.com"
-                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
-                      />
-                    </div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Email Address</label>
+                    <input
+                      type="email"
+                      required
+                      value={forgotEmail}
+                      onChange={e => setForgotEmail(e.target.value)}
+                      placeholder="yourname@family.com"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
                   </div>
-
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-xs transition-all cursor-pointer"
+                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
                   >
-                    {loading ? 'Verifying...' : 'Next: Verify Security Question'}
+                    {loading ? 'Looking up...' : 'Next: Retrieve Question'}
                   </button>
                 </form>
               )}
 
-              {/* Step 2: Security Question */}
               {forgotStep === 2 && (
-                <form onSubmit={handleForgotStep2} className="space-y-4">
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
-                    <p className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">
-                      Your Registered Security Question:
-                    </p>
-                    <p className="text-xs font-bold text-slate-900 mt-1">
-                      "{retrievedQuestion}"
-                    </p>
+                <form onSubmit={handleForgotStep2} className="space-y-3.5">
+                  <p className="text-xs text-slate-500">
+                    Step 2: Answer the security question you configured during registration.
+                  </p>
+                  <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl">
+                    <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block mb-1">Your Question:</span>
+                    <p className="text-xs sm:text-sm font-bold text-slate-900">{retrievedQuestion}</p>
                   </div>
-
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Your Secret Answer
-                    </label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Your Answer</label>
                     <input
                       type="text"
                       required
+                      autoFocus
                       value={forgotAnswer}
                       onChange={e => setForgotAnswer(e.target.value)}
-                      placeholder="Type your answer exactly"
-                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                      placeholder="Type your secret answer"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </div>
-
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-xs transition-all cursor-pointer"
+                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
                   >
-                    {loading ? 'Verifying Answer...' : 'Next: Set New Password'}
+                    {loading ? 'Verifying...' : 'Next: Verify Answer'}
                   </button>
                 </form>
               )}
 
-              {/* Step 3: Set New Password */}
               {forgotStep === 3 && (
                 <form onSubmit={handleForgotStep3} className="space-y-3.5">
+                  <p className="text-xs text-slate-500">
+                    Step 3: Verification passed! Choose a new secure password.
+                  </p>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      New Password (min 6 characters)
-                    </label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">New Password (min 6)</label>
                     <input
                       type="password"
                       required
                       value={newPassword}
                       onChange={e => setNewPassword(e.target.value)}
-                      placeholder="Enter new password"
-                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                      placeholder="New password"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </div>
-
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Confirm New Password
-                    </label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Confirm New Password</label>
                     <input
                       type="password"
                       required
                       value={confirmNewPassword}
                       onChange={e => setConfirmNewPassword(e.target.value)}
                       placeholder="Confirm new password"
-                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </div>
-
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-xs transition-all cursor-pointer"
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
                   >
-                    {loading ? 'Resetting Password...' : 'Save New Password & Sign In'}
+                    {loading ? 'Updating Password...' : 'Reset & Save Password'}
                   </button>
                 </form>
               )}
-
-              <div className="pt-2 text-center border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => { setMode('signin'); clearAlerts(); setForgotStep(1); }}
-                  className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
-                >
-                  ← Return to Sign In
-                </button>
-              </div>
             </div>
           )}
         </div>
-
-        {/* Footer Privacy Guarantee */}
-        <div className="bg-slate-50 px-6 py-3 border-t border-slate-100 text-center">
-          <p className="text-[10px] text-slate-500 flex items-center justify-center space-x-1">
-            <Lock size={11} className="text-amber-600" />
-            <span>Encrypted Ledger • Isolated per Account • 100% Privacy</span>
-          </p>
-        </div>
       </div>
+
+      {/* --- CLOUD DATABASE CONFIGURATION MODAL --- */}
+      {showCloudModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95">
+            <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold">
+                  <Globe size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900">Cloud Sync & Multi-Device Access</h3>
+                  <p className="text-[11px] text-slate-500">Supabase PostgreSQL with Row-Level Security</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCloudModal(false)}
+                className="p-1.5 rounded-full hover:bg-slate-200 text-slate-400 hover:text-slate-700"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCloudCredentials} className="p-5 sm:p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Supabase Project URL
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={cloudUrl}
+                  onChange={e => setCloudUrl(e.target.value)}
+                  placeholder="https://your-project-id.supabase.co"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Supabase Public Anon Key
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={cloudKey}
+                  onChange={e => setCloudKey(e.target.value)}
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              {testStatus && (
+                <div className={`p-3 rounded-xl text-xs font-medium ${
+                  testStatus.testing 
+                    ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                    : testStatus.success 
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
+                      : 'bg-red-50 text-red-800 border border-red-200'
+                }`}>
+                  {testStatus.testing ? 'Testing connection to Supabase...' : testStatus.message}
+                </div>
+              )}
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={handleTestCloudConnection}
+                  disabled={!cloudUrl || !cloudKey || testStatus?.testing}
+                  className="flex-1 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  Test Connection
+                </button>
+                <button
+                  type="submit"
+                  disabled={!cloudUrl || !cloudKey}
+                  className="flex-1 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                >
+                  Save & Connect
+                </button>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
+                <p className="font-bold text-slate-800">Quick Setup Instructions:</p>
+                <ol className="list-decimal pl-4 space-y-0.5">
+                  <li>Create a free account at <strong>supabase.com</strong> and click "New Project".</li>
+                  <li>Copy <strong>Project URL</strong> and <strong>anon public key</strong> from Project Settings → API.</li>
+                  <li>In SQL Editor, run the prepared <strong>supabase/schema.sql</strong> file to enable Row-Level Security.</li>
+                </ol>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

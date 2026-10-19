@@ -1,11 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthService, UserProfile } from '@/lib/authService';
+import { isSupabaseConfigured, getSupabase } from '@/lib/supabase';
+import { syncWithCloud, getSyncState, SyncState } from '@/lib/syncEngine';
 
 interface AuthContextType {
   user: UserProfile | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isCloudConfigured: boolean;
+  cloudSyncState: SyncState;
   knownUsers: UserProfile[];
   login: (email: string, password: string) => Promise<void>;
   register: (params: {
@@ -16,7 +20,11 @@ interface AuthContextType {
     securityQuestion: string;
     securityAnswer: string;
   }) => Promise<void>;
+  loginWithPhoneOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
+  verifyPhoneOtp: (phone: string, token: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
+  triggerSync: () => Promise<void>;
   getSecurityQuestion: (email: string) => Promise<string>;
   verifySecurityAnswer: (email: string, answer: string) => Promise<string>;
   resetPassword: (resetToken: string, newPassword: string) => Promise<void>;
@@ -30,6 +38,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [token, setToken] = useState<string | null>(() => AuthService.getCurrentSession()?.token || null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [knownUsers, setKnownUsers] = useState<UserProfile[]>(() => AuthService.listKnownUsersOnDevice());
+  const [cloudActive, setCloudActive] = useState<boolean>(() => isSupabaseConfigured());
+  const [cloudSyncState, setCloudSyncState] = useState<SyncState>(() => getSyncState());
 
   const refreshUsers = () => {
     setKnownUsers(AuthService.listKnownUsersOnDevice());
@@ -41,12 +51,42 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (session) {
       setUser(session.user);
       setToken(session.token);
+      // Auto-trigger delta sync if cloud is configured
+      if (isSupabaseConfigured()) {
+        syncWithCloud(session.user.id).catch(() => {});
+      }
     } else {
       setUser(null);
       setToken(null);
     }
     refreshUsers();
     setIsLoading(false);
+
+    // Check for Supabase OAuth redirect session
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        supabase.auth.getSession().then(({ data }) => {
+          if (data?.session?.user && !session) {
+            const sbUser = data.session.user;
+            const userProfile: UserProfile = {
+              id: sbUser.id,
+              name: sbUser.user_metadata?.full_name || 'Family Member',
+              email: sbUser.email || '',
+              phone: sbUser.phone || '',
+              createdAt: sbUser.created_at,
+              updatedAt: new Date().toISOString(),
+              lastLoginAt: new Date().toISOString(),
+              provider: 'supabase'
+            };
+            setUser(userProfile);
+            setToken(data.session.access_token);
+            refreshUsers();
+            syncWithCloud(sbUser.id).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }
 
     // Listen to cross-component auth state changes
     const handleAuthChange = (e: any) => {
@@ -56,8 +96,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       refreshUsers();
     };
 
+    // Listen to cloud config changes
+    const handleCloudConfigChange = () => {
+      setCloudActive(isSupabaseConfigured());
+    };
+
+    // Listen to sync state changes
+    const handleSyncChange = (e: any) => {
+      if (e.detail) {
+        setCloudSyncState(e.detail);
+      }
+    };
+
     window.addEventListener('hema:auth-changed', handleAuthChange);
-    return () => window.removeEventListener('hema:auth-changed', handleAuthChange);
+    window.addEventListener('hema:cloud-config-changed', handleCloudConfigChange);
+    window.addEventListener('hema:sync-state-changed', handleSyncChange);
+
+    return () => {
+      window.removeEventListener('hema:auth-changed', handleAuthChange);
+      window.removeEventListener('hema:cloud-config-changed', handleCloudConfigChange);
+      window.removeEventListener('hema:sync-state-changed', handleSyncChange);
+    };
   }, []);
 
   const login = async (email: string, password: string) => {
@@ -91,6 +150,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const loginWithPhoneOtp = async (phone: string) => {
+    return AuthService.loginWithPhoneOtp(phone);
+  };
+
+  const verifyPhoneOtp = async (phone: string, otpToken: string) => {
+    setIsLoading(true);
+    try {
+      const res = await AuthService.verifyPhoneOtp(phone, otpToken);
+      setUser(res.user);
+      setToken(res.token);
+      refreshUsers();
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    await AuthService.signInWithGoogle();
+  };
+
   const logout = async () => {
     setIsLoading(true);
     try {
@@ -100,6 +179,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       refreshUsers();
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const triggerSync = async () => {
+    if (user?.id) {
+      await syncWithCloud(user.id);
     }
   };
 
@@ -120,12 +205,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       value={{
         user,
         token,
-        isAuthenticated: !!user && !!token,
+        isAuthenticated: !!user,
         isLoading,
+        isCloudConfigured: cloudActive,
+        cloudSyncState,
         knownUsers,
         login,
         register,
+        loginWithPhoneOtp,
+        verifyPhoneOtp,
+        signInWithGoogle,
         logout,
+        triggerSync,
         getSecurityQuestion,
         verifySecurityAnswer,
         resetPassword,
@@ -137,7 +228,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   );
 };
 
-export const useAuth = (): AuthContextType => {
+export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');

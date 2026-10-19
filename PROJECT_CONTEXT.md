@@ -93,16 +93,24 @@ flowchart TD
 ### 3.1 Implemented & Verified Features (Production Ready)
 
 #### A. Multi-Tenant Authentication, Authorization & Physical Isolation
-- [x] **Universal Dual-Tier Authentication Engine:** (`src/lib/authService.ts`, `src/lib/cryptoAuth.ts`)
-  - Seamlessly attempts the Express backend API (`http://localhost:3001/api/auth`) when online, and automatically falls back to the client-side W3C WebCrypto vault (`window.crypto.subtle`) when offline.
-  - PBKDF2 key derivation using SHA-256, 100,000 iterations, and a cryptographically secure 16-byte random salt.
+- [x] **Triple-Tier Universal Authentication Engine:** (`src/lib/authService.ts`, `src/lib/supabase.ts`, `src/lib/cryptoAuth.ts`)
+  - **Tier 1 (Cloud Managed):** Supabase Auth with PostgreSQL Row-Level Security (RLS), Indian Mobile Phone Number SMS/OTP (`+91`), Google OAuth, and Email/Password.
+  - **Tier 2 (Self-Hosted):** Node/Express REST Backend (`server/index.js`) with JWT Bearer tokens and timing-safe equal verification.
+  - **Tier 3 (Embedded Offline Vault):** W3C WebCrypto Subtle engine (`window.crypto.subtle`) using PBKDF2-SHA256 (100,000 iterations) and 16-byte random salt for 100% offline continuity on Android smartphones in rural/low-connectivity environments.
+- [x] **Bi-Directional Cloud Synchronization Engine:** (`src/lib/syncEngine.ts`)
+  - Delta synchronization between Supabase PostgreSQL and local IndexedDB (`HemaDB_${userId}`) with Last-Write-Wins conflict resolution.
+  - Automatically triggers on initial signup/login and network reconnection (`window.online`).
 - [x] **Physical Multi-Tenant Database Partitioning:** (`src/lib/db.ts`)
   - IndexedDB partition dynamically opened as `HemaDB_${userId}`. Multiple family members using the same mobile device or browser have physically separated databases. Data from User A cannot be accessed or queried by User B.
 - [x] **Automatic Legacy Data Migration:** (`src/lib/db.ts` $\rightarrow$ `migrateLegacyDataToUser`)
   - Automatically migrates existing unpartitioned offline records from `HemaWebAppDB` (schema v4) into the first authenticated user's isolated partition (`HemaDB_${userId}`) so no historical family records are lost.
 - [x] **Multi-User Account Switcher & 3-Step Password Recovery:** (`src/components/AuthScreen.tsx`)
   - Fast 1-tap account switching on shared devices.
+  - Indian Mobile OTP tab (`+91` 10-digit number + 6-digit SMS verification code).
   - 3-step security question verification wizard for offline and online password recovery without requiring external email/SMS infrastructure.
+  - In-app Cloud Database configuration modal with live ping latency test.
+- [x] **Complete PostgreSQL RLS Schema Migration Script:** (`supabase/schema.sql`)
+  - Production-ready SQL script defining `profiles`, `transactions`, `debts`, `debt_payments`, `gifts`, and `people` with strict `auth.uid() = user_id` Row-Level Security policies and storage bucket configurations.
 - [x] **Server-Side Authorization & Tenant Isolation:** (`server/index.js`)
   - Timing-safe comparisons (`crypto.timingSafeEqual`), Bearer token validation, and strict `req.user.id` scoping on all data endpoints.
 
