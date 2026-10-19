@@ -6,6 +6,14 @@ const STORAGE_KEY_ANON_KEY = 'hema_cloud_supabase_anon_key';
 let cachedClient: SupabaseClient | null = null;
 let currentConfigKey = '';
 
+function sanitizeSupabaseUrl(rawUrl: string): string {
+  let url = rawUrl.trim();
+  url = url.replace(/\/rest\/v1\/?$/, '');
+  url = url.replace(/\/auth\/v1\/?$/, '');
+  url = url.replace(/\/+$/, '');
+  return url;
+}
+
 /**
  * Retrieves the current Supabase configuration from environment variables or localStorage
  */
@@ -16,7 +24,7 @@ export function getSupabaseConfig(): { url: string; anonKey: string } {
   const storedUrl = typeof window !== 'undefined' ? (localStorage.getItem(STORAGE_KEY_URL) || '') : '';
   const storedKey = typeof window !== 'undefined' ? (localStorage.getItem(STORAGE_KEY_ANON_KEY) || '') : '';
 
-  const url = (storedUrl || envUrl).trim();
+  const url = sanitizeSupabaseUrl(storedUrl || envUrl);
   const anonKey = (storedKey || envKey).trim();
 
   return { url, anonKey };
