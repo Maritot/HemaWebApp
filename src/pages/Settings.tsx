@@ -23,6 +23,7 @@ import {
   Smartphone,
   Cloud,
   CheckCircle2,
+  RotateCcw,
   Settings as SettingsIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -33,6 +34,7 @@ import {
   getGifts, 
   exportFullBackup, 
   restoreFullBackup, 
+  clearUserPartition,
   HemaBackupPayload,
   DebtRecordItem
 } from '@/lib/db';
@@ -182,6 +184,10 @@ const Settings: React.FC = () => {
   const [copySuccess, setCopySuccess] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Account Reset Modal State
+  const [showResetAccountModal, setShowResetAccountModal] = useState(false);
+  const [resettingAccount, setResettingAccount] = useState(false);
+
   useEffect(() => {
     checkNotificationPermission().then(granted => {
       setDeviceAlertsActive(granted);
@@ -191,7 +197,7 @@ const Settings: React.FC = () => {
     const config = getSupabaseConfig();
     setCloudUrl(config.url);
     setCloudKey(config.anonKey);
-  }, [showCloudModal]);
+  }, [showCloudModal, user?.id]);
 
   const loadDebtAlerts = async () => {
     const debts = await getDebts();
@@ -200,6 +206,21 @@ const Settings: React.FC = () => {
       d.status !== 'SETTLED' && (d.status === 'OVERDUE' || d.dueDate <= now + 3 * 86400000)
     );
     setOverdueDebts(urgent);
+  };
+
+  const handleResetMyAccount = async () => {
+    if (!user) return;
+    setResettingAccount(true);
+    try {
+      await clearUserPartition(user.id);
+      await loadDebtAlerts();
+      setBackupStatus('Your personal ledger has been cleanly reset to zero.');
+      setShowResetAccountModal(false);
+    } catch (e: any) {
+      setBackupStatus('Failed to reset ledger: ' + (e.message || 'Unknown error'));
+    } finally {
+      setResettingAccount(false);
+    }
   };
 
   // CSV Export using Native Filesystem & Share Sheet
@@ -661,6 +682,13 @@ const Settings: React.FC = () => {
               title={t('settings.export')} 
               onClick={handleExportCSV} 
             />
+            <SettingRow 
+              icon={<RotateCcw size={18} className="text-amber-600" />} 
+              title="Reset Account Ledger (రీసెట్ / రీ-స్టార్ట్)" 
+              badge="Zero Slate"
+              badgeColor="bg-amber-100 text-amber-900 border border-amber-200"
+              onClick={() => setShowResetAccountModal(true)} 
+            />
           </CardContent>
         </Card>
 
@@ -1048,6 +1076,64 @@ const Settings: React.FC = () => {
                   </p>
                 </div>
               </form>
+            </CardContent>
+          </Card>
+        </div>,
+        document.body
+      )}
+
+      {/* ================= MODAL 5: RESET ACCOUNT LEDGER CONFIRMATION ================= */}
+      {showResetAccountModal && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <Card className="w-full max-w-sm border-none shadow-2xl bg-surface animate-in zoom-in-95">
+            <CardContent className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center space-x-2">
+                  <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
+                    <AlertTriangle size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-textMain text-base">Reset Account Ledger</h3>
+                    <p className="text-xs text-textMuted">Clean isolated slate</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowResetAccountModal(false)}
+                  className="text-textMuted hover:text-textMain p-1"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-900 text-xs space-y-2">
+                  <p className="font-bold">⚠️ Warning: Irreversible Action</p>
+                  <p>
+                    This will permanently clear all recorded <strong>transactions, debts, and gifts</strong> in the active partition for <strong>{user?.name}</strong>.
+                  </p>
+                  <p className="text-[11px] text-red-700">
+                    🔒 Other user accounts on this phone (and their private ledgers) will <strong>NOT</strong> be touched.
+                  </p>
+                </div>
+
+                <div className="flex space-x-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowResetAccountModal(false)}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={resettingAccount}
+                    onClick={handleResetMyAccount}
+                    className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs shadow-md transition-colors disabled:opacity-50"
+                  >
+                    {resettingAccount ? 'Purging...' : 'Yes, Reset to Zero'}
+                  </button>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>,

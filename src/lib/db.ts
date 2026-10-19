@@ -184,20 +184,44 @@ export const initDB = (explicitUserId?: string) => {
   return dbPromise;
 };
 
+export const GLOBAL_LEGACY_CLAIMED_KEY = 'hema_legacy_data_already_claimed_by_user';
+
 /**
  * Seamless Migration for Existing Offline Data:
- * When the first user creates an account, this migrates any existing
- * transactions/debts/gifts from the legacy unpartitioned HemaWebAppDB
- * to the new authenticated user's isolated partition so no prior records are lost.
+ * When the FIRST user creates an account on a device that already has offline data,
+ * this migrates the existing transactions/debts/gifts from legacy HemaWebAppDB
+ * into that primary user's isolated partition so their records are preserved.
+ *
+ * CRITICAL MULTI-TENANT GUARD:
+ * - Legacy data can only ever be claimed once by the primary device owner.
+ * - Subsequent accounts (e.g. spouse, child, other family members) MUST start
+ *   with an empty ledger and never clone or inherit someone else's legacy records.
+ * - Once migrated, the legacy unpartitioned HemaWebAppDB is emptied.
  */
 export async function migrateLegacyDataToUser(targetUserId: string): Promise<boolean> {
+  if (!targetUserId || targetUserId === 'default_user') return false;
+
   const migrationKey = `hema_migrated_legacy_${targetUserId}`;
+  const alreadyClaimedBy = localStorage.getItem(GLOBAL_LEGACY_CLAIMED_KEY);
+
+  // If another user already claimed legacy data, strictly reject copying to this new user!
+  if (alreadyClaimedBy && alreadyClaimedBy !== targetUserId) {
+    console.log(`[Migration] Legacy offline data is already owned by primary user ${alreadyClaimedBy}. New account ${targetUserId} starts fresh.`);
+    return false;
+  }
+
   if (localStorage.getItem(migrationKey)) {
-    return false; // Already migrated
+    return false; // Already migrated for this user
   }
 
   try {
-    const legacyDB = await openDB<HemaDB>('HemaWebAppDB', 4);
+    const legacyDB = await openDB<HemaDB>('HemaWebAppDB', 5).catch(() => null);
+    if (!legacyDB) {
+      localStorage.setItem(GLOBAL_LEGACY_CLAIMED_KEY, targetUserId);
+      localStorage.setItem(migrationKey, 'true');
+      return false;
+    }
+
     const [txs, gifts, debts, people] = await Promise.all([
       legacyDB.getAll('transactions').catch(() => []),
       legacyDB.getAll('gifts').catch(() => []),
@@ -206,6 +230,7 @@ export async function migrateLegacyDataToUser(targetUserId: string): Promise<boo
     ]);
 
     if (txs.length === 0 && gifts.length === 0 && debts.length === 0 && people.length === 0) {
+      localStorage.setItem(GLOBAL_LEGACY_CLAIMED_KEY, targetUserId);
       localStorage.setItem(migrationKey, 'true');
       return false;
     }
@@ -225,14 +250,91 @@ export async function migrateLegacyDataToUser(targetUserId: string): Promise<boo
       await targetDB.put('people', { ...p, userId: targetUserId });
     }
 
+    // Erase the unpartitioned legacy database so no subsequent user can ever clone it
+    try {
+      const stores = ['transactions', 'gifts', 'debts', 'people'].filter(s => legacyDB.objectStoreNames.contains(s as any));
+      if (stores.length > 0) {
+        const tx = legacyDB.transaction(stores as any, 'readwrite');
+        await Promise.all([
+          ...stores.map(s => tx.objectStore(s as any).clear().catch(() => {})),
+          tx.done
+        ]);
+        console.log('[Migration] Cleared unpartitioned legacy HemaWebAppDB after successful transfer.');
+      }
+    } catch (clearErr) {
+      console.warn('[Migration] Note clearing legacy db:', clearErr);
+    }
+
+    localStorage.setItem(GLOBAL_LEGACY_CLAIMED_KEY, targetUserId);
     localStorage.setItem(migrationKey, 'true');
     console.log(`[Migration] Migrated ${txs.length} txs, ${debts.length} debts, ${gifts.length} gifts to user ${targetUserId}`);
     return true;
   } catch (err) {
     console.warn('[Migration] No legacy database found or migration skipped:', err);
+    localStorage.setItem(GLOBAL_LEGACY_CLAIMED_KEY, targetUserId);
     localStorage.setItem(migrationKey, 'true');
     return false;
   }
+}
+
+/**
+ * Completely purges all records in a user's isolated IndexedDB partition and local fallbacks.
+ */
+export async function clearUserPartition(targetUserId?: string): Promise<void> {
+  const userId = targetUserId || getActiveUserId();
+  const db = await initDB(userId);
+  const stores = ['transactions', 'gifts', 'debts', 'people'].filter(s => db.objectStoreNames.contains(s as any));
+  if (stores.length > 0) {
+    const tx = db.transaction(stores as any, 'readwrite');
+    await Promise.all([
+      ...stores.map(s => tx.objectStore(s as any).clear().catch(() => {})),
+      tx.done
+    ]);
+  }
+  localStorage.removeItem(`hema_fallback_people_${userId}`);
+  console.log(`[Partition] Cleared all records in partition for user: ${userId}`);
+}
+
+/**
+ * Auto-Remediation for polluted secondary user accounts:
+ * If a secondary user account on this device was mistakenly seeded with the primary
+ * user's legacy transactions due to the pre-v2.0 migration flaw, this purges the
+ * copied data to guarantee 100% strict data isolation.
+ */
+export async function remediatePollutedPartitions(activeUserId: string): Promise<boolean> {
+  if (!activeUserId || activeUserId === 'default_user') return false;
+
+  // 1. Establish the rightful primary claimant
+  let claimedUser = localStorage.getItem(GLOBAL_LEGACY_CLAIMED_KEY);
+  if (!claimedUser) {
+    try {
+      const rawAccounts = localStorage.getItem('hema_vault_accounts');
+      if (rawAccounts) {
+        const accounts = JSON.parse(rawAccounts);
+        if (Array.isArray(accounts) && accounts.length > 0) {
+          claimedUser = accounts[0].id;
+          localStorage.setItem(GLOBAL_LEGACY_CLAIMED_KEY, claimedUser);
+        }
+      }
+    } catch {}
+  }
+
+  // 2. If this active user is NOT the primary claimant:
+  if (claimedUser && activeUserId !== claimedUser) {
+    const remediationKey = `hema_remediated_pollution_${activeUserId}`;
+    if (!localStorage.getItem(remediationKey)) {
+      const wasFalselyMigrated = localStorage.getItem(`hema_migrated_legacy_${activeUserId}`) === 'true';
+      if (wasFalselyMigrated) {
+        console.warn(`[Multi-Tenant Isolation] Secondary account ${activeUserId} was contaminated with legacy clone. Auto-purging partition to enforce strict isolation.`);
+        await clearUserPartition(activeUserId);
+        localStorage.removeItem(`hema_migrated_legacy_${activeUserId}`);
+        localStorage.setItem(remediationKey, 'true');
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 // --- Fallback localStorage Helpers (Strictly Scoped by User ID) ---
@@ -279,7 +381,10 @@ export const getTransactions = async () => {
   const db = await initDB();
   const txs = await db.getAllFromIndex('transactions', 'by-date');
   const userId = getActiveUserId();
-  return txs.filter(t => !t.userId || t.userId === userId);
+  if (userId === 'default_user') {
+    return txs.filter(t => !t.userId || t.userId === 'default_user');
+  }
+  return txs.filter(t => t.userId === userId);
 };
 
 export const deleteTransaction = async (id: string) => {
@@ -304,20 +409,28 @@ export const addPerson = async (person: PersonRecord) => {
 export const getPeople = async (): Promise<PersonRecord[]> => {
   const localList = getLocalPeople();
   const userId = getActiveUserId();
+  const isDefault = userId === 'default_user';
   try {
     const db = await initDB();
     if (db.objectStoreNames.contains('people')) {
       const dbList = await db.getAll('people');
-      const filteredDbList = dbList.filter(p => !p.userId || p.userId === userId);
+      const filteredDbList = isDefault
+        ? dbList.filter(p => !p.userId || p.userId === 'default_user')
+        : dbList.filter(p => p.userId === userId);
       const map = new Map<string, PersonRecord>();
       filteredDbList.forEach(p => map.set(p.id, p));
-      localList.forEach(p => map.set(p.id, p));
+      localList.forEach(p => {
+        const matches = isDefault ? (!p.userId || p.userId === 'default_user') : p.userId === userId;
+        if (matches) map.set(p.id, p);
+      });
       return Array.from(map.values());
     }
   } catch (err) {
     console.warn('IndexedDB getPeople fallback to localStorage:', err);
   }
-  return localList.filter(p => !p.userId || p.userId === userId);
+  return isDefault
+    ? localList.filter(p => !p.userId || p.userId === 'default_user')
+    : localList.filter(p => p.userId === userId);
 };
 
 export const updatePerson = async (person: PersonRecord) => {
@@ -385,7 +498,10 @@ export const getGifts = async (): Promise<GiftTransaction[]> => {
   const db = await initDB();
   const gifts = await db.getAllFromIndex('gifts', 'by-date');
   const userId = getActiveUserId();
-  return gifts.filter(g => !g.userId || g.userId === userId);
+  if (userId === 'default_user') {
+    return gifts.filter(g => !g.userId || g.userId === 'default_user');
+  }
+  return gifts.filter(g => g.userId === userId);
 };
 
 export const deleteGift = async (id: string) => {
@@ -404,7 +520,10 @@ export const getDebts = async () => {
   const db = await initDB();
   const debts = await db.getAll('debts');
   const userId = getActiveUserId();
-  return debts.filter(d => !d.userId || d.userId === userId);
+  if (userId === 'default_user') {
+    return debts.filter(d => !d.userId || d.userId === 'default_user');
+  }
+  return debts.filter(d => d.userId === userId);
 };
 
 export const updateDebtStatus = async (id: string, status: 'PENDING' | 'SETTLED' | 'OVERDUE') => {

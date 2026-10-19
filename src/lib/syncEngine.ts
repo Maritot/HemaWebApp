@@ -53,12 +53,18 @@ export async function uploadLocalDataToCloud(userId: string): Promise<{ success:
 
   try {
     const localDb = await initDB(userId);
-    const [transactions, debts, gifts, people] = await Promise.all([
+    const [allTransactions, allDebts, allGifts, allPeople] = await Promise.all([
       localDb.getAll('transactions').catch(() => []),
       localDb.getAll('debts').catch(() => []),
       localDb.getAll('gifts').catch(() => []),
       localDb.getAll('people').catch(() => [])
     ]);
+
+    // Strictly ensure only records belonging to this user are uploaded
+    const transactions = allTransactions.filter(t => t.userId === userId);
+    const debts = allDebts.filter(d => d.userId === userId);
+    const gifts = allGifts.filter(g => g.userId === userId);
+    const people = allPeople.filter(p => p.userId === userId);
 
     let count = 0;
 

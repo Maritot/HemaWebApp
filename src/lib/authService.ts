@@ -14,7 +14,7 @@ import {
   generateSalt, 
   generateSecureToken 
 } from './cryptoAuth';
-import { setActiveUserForDB, migrateLegacyDataToUser } from './db';
+import { setActiveUserForDB, migrateLegacyDataToUser, remediatePollutedPartitions } from './db';
 import { getSupabase, isSupabaseConfigured } from './supabase';
 import { syncWithCloud, uploadLocalDataToCloud } from './syncEngine';
 
@@ -97,6 +97,7 @@ function persistSession(session: AuthSession | null) {
   if (session) {
     localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(session));
     setActiveUserForDB(session.user.id);
+    remediatePollutedPartitions(session.user.id).catch(() => {});
   } else {
     localStorage.removeItem(STORAGE_KEY_SESSION);
     setActiveUserForDB(null);

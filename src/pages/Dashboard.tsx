@@ -8,9 +8,11 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
+import { useAuth } from '@/context/AuthContext';
 
 const Dashboard: React.FC = () => {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<HemaDB['transactions']['value'][]>([]);
   const [timeframe, setTimeframe] = useState<'weekly' | 'monthly' | 'yearly'>('weekly');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -18,7 +20,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     fetchDB();
-  }, []);
+  }, [user?.id]);
 
   const fetchDB = async () => {
     const txs = await getTransactions();

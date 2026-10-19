@@ -43,11 +43,13 @@ import {
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { format } from 'date-fns';
 import { capturePhoto } from '@/lib/camera';
+import { useAuth } from '@/context/AuthContext';
 
 const PAYMENT_MODES = ['UPI (GPay / PhonePe / Paytm)', 'Cash (Hand-to-Hand)', 'Bank NEFT / IMPS', 'Cheque', 'Other'];
 
 const Debts: React.FC = () => {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [activeTab, setActiveTab] = useState<'PENDING' | 'SETTLED'>('PENDING');
   const [debts, setDebts] = useState<DebtRecordItem[]>([]);
@@ -95,7 +97,7 @@ const Debts: React.FC = () => {
 
   useEffect(() => {
     fetchDebts();
-  }, []);
+  }, [user?.id]);
 
   const fetchDebts = async () => {
     const data = await getDebts();

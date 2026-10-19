@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthService, UserProfile } from '@/lib/authService';
+import { remediatePollutedPartitions } from '@/lib/db';
 import { isSupabaseConfigured, getSupabase } from '@/lib/supabase';
 import { syncWithCloud, getSyncState, SyncState } from '@/lib/syncEngine';
 
@@ -51,6 +52,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (session) {
       setUser(session.user);
       setToken(session.token);
+      // Auto-remediate if secondary account had cloned data
+      remediatePollutedPartitions(session.user.id).catch(() => {});
       // Auto-trigger delta sync if cloud is configured
       if (isSupabaseConfigured()) {
         syncWithCloud(session.user.id).catch(() => {});

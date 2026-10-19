@@ -38,12 +38,14 @@ import {
 } from '@/lib/db';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { format } from 'date-fns';
+import { useAuth } from '@/context/AuthContext';
 
 const RELATION_TAGS = ['Uncle', 'Aunt', 'In-laws', 'Cousin', 'Friend', 'Neighbour', 'Colleague', 'Family'];
 const OCCASIONS = ['Wedding (विवाह / పెళ్లి)', 'Housewarming (गृहप्रवेश / గృహప్రవేశం)', 'Birthday (जन्मदिन / పుట్టినరోజు)', 'Baby Shower / Seemantham', 'Festival (दीपावली / సంక్రాంతి)', 'Retirement', 'Other'];
 
 const Gifts: React.FC = () => {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   // Data states
@@ -89,7 +91,7 @@ const Gifts: React.FC = () => {
 
   useEffect(() => {
     loadAllData();
-  }, []);
+  }, [user?.id]);
 
   const loadAllData = async () => {
     const [peopleData, giftsData] = await Promise.all([getPeople(), getGifts()]);

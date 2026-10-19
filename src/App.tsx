@@ -119,7 +119,7 @@ const AppContent: React.FC = () => {
           ? "flex flex-col overflow-hidden px-2.5 sm:px-4 pt-1 sm:pt-2 pb-0 lg:max-w-3xl lg:mx-auto lg:w-full"
           : "overflow-y-auto pb-24 p-4 md:p-6 lg:max-w-3xl lg:mx-auto lg:w-full"
       )}>
-        <Routes>
+        <Routes key={user?.id || 'guest'}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/debts" element={<Debts />} />

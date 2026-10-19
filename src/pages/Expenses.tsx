@@ -22,11 +22,13 @@ import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
 import { format, isSameDay } from 'date-fns';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
+import { useAuth } from '@/context/AuthContext';
 
 type HistoryFilterType = 'ALL' | 'EXPENSE' | 'INCOME';
 
 const Expenses: React.FC = () => {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const { text: voiceText, isListening, startListening, hasSupport } = useSpeechToText();
 
   // Add Form state
@@ -63,7 +65,7 @@ const Expenses: React.FC = () => {
 
   useEffect(() => {
     fetchTransactions();
-  }, []);
+  }, [user?.id]);
 
   // Decoupled: changing top form does NOT change bottom history filter
   const handleTypeChange = (newType: 'EXPENSE' | 'INCOME') => {
