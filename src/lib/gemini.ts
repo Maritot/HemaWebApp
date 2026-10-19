@@ -527,11 +527,10 @@ CRITICAL ENTERPRISE GUARDRAILS & DOMAIN SCOPE (STRICTLY ENFORCED):
 
 5. DIRECT & PURPOSEFUL: For general advisory queries, keep answers punchy and concise (under 100-150 words). HOWEVER, when the user explicitly asks for a sheet, spreadsheet, table, report, full list, breakdown, or detailed summary, provide the COMPLETE table or report with all relevant items without artificial truncation.
 
-6. ACCURATE LIVE BULLION RATES & STRUCTURED FORMATTING:
-   - Use bold titles (**Headline**) to organize key facts and bullet points (* Item) for lists.
-   - For Gold or Silver rate queries (especially in Tirupati, Andhra Pradesh, or India): ALWAYS quote the EXACT live rates provided in the [LIVE MARKET BULLION RATES] section of your verified context above!
-   - NEVER invent or use old pre-2024 rates (such as ₹7,000/g or ₹8,000/g). Current rates in 2026 are ~₹14,765/g for 24K pure gold, ~₹13,535/g for 22K jewellery gold, and ~₹192/g for silver.
-   - Always mention making charges (wastage) and 3% GST, plus 6-digit BIS HUID hallmarking advice for buyers.
+6. REAL-TIME GOOGLE SEARCH & LIVE MARKET DATA:
+   - For real-world questions (such as Gold/Silver rates in Tirupati, AP, or India, currency exchange rates, FD interest rates, or fuel prices), utilize your real-time Google Search grounding tool and the [LIVE MARKET BULLION RATES] context.
+   - Quote the live rates retrieved from the web or context. Never hallucinate outdated pre-2024 rates.
+   - For physical gold in India, always distinguish 24K pure bullion from 22K (916 hallmark jewellery). Mention making charges (wastage usually 8%–14%), 3% GST, and 6-digit BIS HUID hallmarking.
    - Never output bare asterisks, broken formatting, or walls of dense text.
 
 7. REGULATORY & DISCLAIMER RULE: Keep any SEBI compliance note to a single subtle sentence at the end (e.g. *(Note: For educational household management only)*). Never generate lengthy legal paragraphs.
@@ -656,12 +655,17 @@ export const queryGemini = async (
     try {
       const generateUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:generateContent?key=${apiKey}`;
 
-      // Clean standard payload with top-level system_instruction and temperature 0.2
-      const cleanPayload = {
+      // Clean payload with Google Search Grounding for real-time web retrieval
+      const cleanPayload: any = {
         system_instruction: {
           parts: [{ text: systemPrompt }]
         },
         contents,
+        tools: [
+          {
+            google_search: {}
+          }
+        ],
         generationConfig: {
           temperature: 0.2,
           maxOutputTokens: 2048,
@@ -671,12 +675,27 @@ export const queryGemini = async (
         }
       };
 
-      const response = await fetch(generateUrl, {
+      let response = await fetch(generateUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanPayload),
         signal
       });
+
+      // If google_search tool is not supported on a specific model tier (HTTP 400), retry cleanly without tools
+      if (response.status === 400) {
+        const withoutToolsPayload = { ...cleanPayload };
+        delete withoutToolsPayload.tools;
+        const retryRes = await fetch(generateUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withoutToolsPayload),
+          signal
+        });
+        if (retryRes.ok) {
+          response = retryRes;
+        }
+      }
 
       if (response.ok) {
         const data = await response.json();
@@ -769,11 +788,16 @@ export const queryGeminiStream = async (
     try {
       const streamUrl = `https://generativelanguage.googleapis.com/v1beta/${currentModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
-      const cleanPayload = {
+      const cleanPayload: any = {
         system_instruction: {
           parts: [{ text: systemPrompt }]
         },
         contents,
+        tools: [
+          {
+            google_search: {}
+          }
+        ],
         generationConfig: {
           temperature: 0.2,
           maxOutputTokens: 2048,
@@ -783,12 +807,27 @@ export const queryGeminiStream = async (
         }
       };
 
-      const response = await fetch(streamUrl, {
+      let response = await fetch(streamUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanPayload),
         signal
       });
+
+      // If google_search tool is not supported in SSE stream on a specific model tier (HTTP 400), retry cleanly without tools
+      if (response.status === 400) {
+        const withoutToolsPayload = { ...cleanPayload };
+        delete withoutToolsPayload.tools;
+        const retryRes = await fetch(streamUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withoutToolsPayload),
+          signal
+        });
+        if (retryRes.ok) {
+          response = retryRes;
+        }
+      }
 
       if (response.ok && response.body) {
         const reader = response.body.getReader();
@@ -1118,19 +1157,52 @@ export function generateLocalFinancialAdvice(query: string, ragContext: string =
   if (q.includes('gold') || q.includes('sohna') || q.includes('ornament') || q.includes('carat') || q.includes('బంగారం') || q.includes('సోనా') || q.includes('వెండి') || q.includes('silver')) {
     // Return verified real-time bullion rates if user asks for prices, rates, or today's cost
     if (q.includes('rate') || q.includes('price') || q.includes('cost') || q.includes('today') || q.includes('ధర') || q.includes('రేటు') || q.includes('భావం') || q.includes('भाव') || q.includes('tirupati') || q.includes('తిరుపతి')) {
-      const liveBenchmark = {
-        updatedAt: new Date().toISOString(),
-        dateStr: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
-        rate24kPerGram: 14765,
-        rate22kPerGram: 13535,
-        rate18kPerGram: 11074,
-        silverPerGram: 192,
-        city: 'Tirupati (తిరుపతి)',
-        state: 'Andhra Pradesh',
-        gstPercent: 3,
-        wastageRange: '8% - 14%'
-      };
-      return formatGoldRatesSummary(liveBenchmark, chatLanguage);
+      let activeRates: any = null;
+      try {
+        const cachedStr = sessionStorage.getItem('hema_live_bullion_rates_cache');
+        if (cachedStr) {
+          activeRates = JSON.parse(cachedStr).data;
+        }
+      } catch {}
+
+      if (!activeRates && ragContext) {
+        const rate24kMatch = ragContext.match(/24-Karat Gold.*?₹([\d,]+)/i);
+        const rate22kMatch = ragContext.match(/22-Karat Gold.*?₹([\d,]+)/i);
+        const silverMatch = ragContext.match(/Silver.*?₹([\d,]+)/i);
+        if (rate24kMatch && rate22kMatch) {
+          const r24 = parseInt(rate24kMatch[1].replace(/,/g, ''), 10);
+          activeRates = {
+            updatedAt: new Date().toISOString(),
+            dateStr: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+            rate24kPerGram: r24,
+            rate22kPerGram: parseInt(rate22kMatch[1].replace(/,/g, ''), 10),
+            rate18kPerGram: Math.round(r24 * (18 / 24)),
+            silverPerGram: silverMatch ? parseInt(silverMatch[1].replace(/,/g, ''), 10) : 192,
+            city: 'Tirupati (తిరుపతి)',
+            state: 'Andhra Pradesh',
+            gstPercent: 3,
+            wastageRange: '8% - 14%',
+            isLive: true
+          };
+        }
+      }
+
+      if (!activeRates) {
+        activeRates = {
+          updatedAt: new Date().toISOString(),
+          dateStr: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+          rate24kPerGram: 14765,
+          rate22kPerGram: 13535,
+          rate18kPerGram: 11074,
+          silverPerGram: 192,
+          city: 'Tirupati (తిరుపతి)',
+          state: 'Andhra Pradesh',
+          gstPercent: 3,
+          wastageRange: '8% - 14%',
+          isLive: false
+        };
+      }
+      return formatGoldRatesSummary(activeRates, chatLanguage);
     }
 
     if (isTe) {
