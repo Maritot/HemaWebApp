@@ -12,7 +12,9 @@ import {
   ArrowRight, 
   CheckCircle2, 
   AlertCircle,
-  Users
+  Users,
+  RefreshCw,
+  Send
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 
@@ -29,6 +31,8 @@ export const AuthScreen: React.FC = () => {
     login, 
     register, 
     signInWithGoogle, 
+    sendPasswordResetOtp,
+    verifyPasswordResetOtp,
     getSecurityQuestion, 
     verifySecurityAnswer, 
     resetPassword, 
@@ -57,9 +61,20 @@ export const AuthScreen: React.FC = () => {
   const [signUpQuestion, setSignUpQuestion] = useState(SECURITY_QUESTIONS[0]);
   const [signUpAnswer, setSignUpAnswer] = useState('');
 
-  // Forgot Password State (Accepts either Email Address or Mobile Number)
-  const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(1);
+  // Forgot Password State
+  const [forgotMethod, setForgotMethod] = useState<'email_otp' | 'security_question'>('email_otp');
   const [forgotIdentifier, setForgotIdentifier] = useState('');
+  
+  // Real Email OTP State
+  const [forgotOtpSent, setForgotOtpSent] = useState(false);
+  const [targetEmail, setTargetEmail] = useState('');
+  const [maskedEmail, setMaskedEmail] = useState('');
+  const [forgotOtpCode, setForgotOtpCode] = useState('');
+  const [newOtpPassword, setNewOtpPassword] = useState('');
+  const [confirmNewOtpPassword, setConfirmNewOtpPassword] = useState('');
+
+  // Security Question Fallback State
+  const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(1);
   const [retrievedQuestion, setRetrievedQuestion] = useState('');
   const [forgotAnswer, setForgotAnswer] = useState('');
   const [resetToken, setResetToken] = useState('');
@@ -150,7 +165,66 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  // Forgot Password Wizard Handlers
+  // --- Real Product Email OTP Password Recovery ---
+  const handleSendResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearAlerts();
+
+    if (!forgotIdentifier.trim()) {
+      setErrorMessage('Please enter your registered email address or 10-digit mobile number.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await sendPasswordResetOtp(forgotIdentifier.trim());
+      setTargetEmail(res.email);
+      setMaskedEmail(res.maskedEmail);
+      setForgotOtpSent(true);
+      setSuccessMessage(`Verification code sent to ${res.maskedEmail}. Please check your inbox or spam folder.`);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to send verification code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearAlerts();
+
+    if (forgotOtpCode.trim().length < 6) {
+      setErrorMessage('Please enter the 6-digit code sent to your email.');
+      return;
+    }
+    if (newOtpPassword.length < 6) {
+      setErrorMessage('New password must be at least 6 characters.');
+      return;
+    }
+    if (newOtpPassword !== confirmNewOtpPassword) {
+      setErrorMessage('Passwords do not match.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await verifyPasswordResetOtp(targetEmail, forgotOtpCode.trim(), newOtpPassword);
+      setSuccessMessage('Password reset successfully! Please sign in with your new password.');
+      setMode('signin');
+      setSignInIdentifier(targetEmail);
+      setSignInPassword('');
+      setForgotOtpSent(false);
+      setForgotOtpCode('');
+      setNewOtpPassword('');
+      setConfirmNewOtpPassword('');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Verification failed. Please check the code and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- Security Question Fallback Recovery ---
   const handleForgotStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     clearAlerts();
@@ -357,7 +431,9 @@ export const AuthScreen: React.FC = () => {
                     onClick={() => { 
                       setMode('forgot'); 
                       clearAlerts(); 
-                      setForgotIdentifier(signInIdentifier); 
+                      setForgotIdentifier(signInIdentifier);
+                      setForgotMethod('email_otp');
+                      setForgotOtpSent(false);
                     }}
                     className="text-[11px] font-semibold text-amber-700 hover:text-amber-800 hover:underline cursor-pointer"
                   >
@@ -557,119 +633,297 @@ export const AuthScreen: React.FC = () => {
             </form>
           )}
 
-          {/* --- FORGOT PASSWORD WIZARD --- */}
+          {/* --- FORGOT PASSWORD WIZARD (REAL EMAIL OTP + OFFLINE RECOVERY) --- */}
           {mode === 'forgot' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center space-x-2">
                   <Key size={16} className="text-amber-600" />
                   <h3 className="text-xs sm:text-sm font-bold text-slate-900">
-                    3-Step Password Recovery
+                    {forgotMethod === 'email_otp' ? 'Verified OTP Password Reset' : 'Security Question Recovery'}
                   </h3>
                 </div>
                 <button
                   type="button"
-                  onClick={() => { setMode('signin'); clearAlerts(); setForgotStep(1); }}
+                  onClick={() => { 
+                    setMode('signin'); 
+                    clearAlerts(); 
+                    setForgotStep(1); 
+                    setForgotOtpSent(false); 
+                  }}
                   className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
                 >
                   Back to Sign In
                 </button>
               </div>
 
-              {forgotStep === 1 && (
-                <form onSubmit={handleForgotStep1} className="space-y-3.5">
-                  <p className="text-xs text-slate-500">
-                    Step 1: Enter your registered email address or 10-digit mobile number.
-                  </p>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Email or Mobile Number
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={forgotIdentifier}
-                      onChange={e => setForgotIdentifier(e.target.value)}
-                      placeholder="e.g. yourname@family.com or 9493371100"
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
-                  >
-                    {loading ? 'Looking up...' : 'Next: Retrieve Question'}
-                  </button>
-                </form>
+              {/* METHOD 1: REAL 6-DIGIT EMAIL OTP FLOW */}
+              {forgotMethod === 'email_otp' && (
+                <>
+                  {!forgotOtpSent ? (
+                    <form onSubmit={handleSendResetOtp} className="space-y-3.5">
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Enter your registered Email Address or 10-digit Mobile Number. We will dispatch a real 6-digit verification code directly to your email inbox.
+                      </p>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Email Address or Mobile Number
+                        </label>
+                        <div className="relative">
+                          <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            required
+                            value={forgotIdentifier}
+                            onChange={e => setForgotIdentifier(e.target.value)}
+                            placeholder="e.g. tharrrrun@gmail.com or 9493371100"
+                            className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !forgotIdentifier.trim()}
+                        className="w-full py-3 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-60"
+                      >
+                        <Send size={15} />
+                        <span>{loading ? 'Sending Code...' : 'Send 6-Digit Verification Code'}</span>
+                      </button>
+
+                      <div className="text-center pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearAlerts();
+                            setForgotMethod('security_question');
+                            setForgotStep(1);
+                          }}
+                          className="text-xs font-semibold text-slate-500 hover:text-amber-700 cursor-pointer"
+                        >
+                          Can't access email? Reset using Security Question
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleVerifyResetOtp} className="space-y-3.5">
+                      <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl text-xs">
+                        <p className="font-semibold text-amber-950">
+                          📧 Verification code sent to <span className="font-mono font-bold text-amber-800">{maskedEmail}</span>
+                        </p>
+                        <p className="text-[11px] text-amber-700 mt-0.5">
+                          Open your Gmail or email app, copy the 6-digit code, and enter it below.
+                        </p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-center mb-1">
+                          <label className="text-xs font-bold text-slate-700">
+                            6-Digit Verification Code
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => { setForgotOtpSent(false); setForgotOtpCode(''); }}
+                            className="text-[11px] font-semibold text-amber-700 hover:underline cursor-pointer"
+                          >
+                            Change Email
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          required
+                          maxLength={6}
+                          autoFocus
+                          value={forgotOtpCode}
+                          onChange={e => setForgotOtpCode(e.target.value.replace(/\D/g, ''))}
+                          placeholder="• • • • • •"
+                          className="w-full text-center py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-lg font-black tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          New Password (min 6)
+                        </label>
+                        <div className="relative">
+                          <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            value={newOtpPassword}
+                            onChange={e => setNewOtpPassword(e.target.value)}
+                            placeholder="Enter new password"
+                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Confirm New Password
+                        </label>
+                        <div className="relative">
+                          <Key size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            value={confirmNewOtpPassword}
+                            onChange={e => setConfirmNewOtpPassword(e.target.value)}
+                            placeholder="Re-enter new password"
+                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading || forgotOtpCode.length < 6 || newOtpPassword.length < 6}
+                        className="w-full py-3 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-60"
+                      >
+                        <CheckCircle2 size={16} />
+                        <span>{loading ? 'Verifying & Saving...' : 'Verify Code & Reset Password'}</span>
+                      </button>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={handleSendResetOtp}
+                          className="font-bold text-slate-500 hover:text-amber-700 flex items-center gap-1 cursor-pointer"
+                        >
+                          <RefreshCw size={12} />
+                          <span>Resend Email Code</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearAlerts();
+                            setForgotMethod('security_question');
+                            setForgotStep(1);
+                          }}
+                          className="font-semibold text-slate-500 hover:text-slate-800 cursor-pointer"
+                        >
+                          Use Security Question instead
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </>
               )}
 
-              {forgotStep === 2 && (
-                <form onSubmit={handleForgotStep2} className="space-y-3.5">
-                  <p className="text-xs text-slate-500">
-                    Step 2: Answer the security question you configured during registration.
-                  </p>
-                  <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl">
-                    <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block mb-1">Your Question:</span>
-                    <p className="text-xs sm:text-sm font-bold text-slate-900">{retrievedQuestion}</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Your Answer</label>
-                    <input
-                      type="text"
-                      required
-                      autoFocus
-                      value={forgotAnswer}
-                      onChange={e => setForgotAnswer(e.target.value)}
-                      placeholder="Type your secret answer"
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
-                  >
-                    {loading ? 'Verifying...' : 'Next: Verify Answer'}
-                  </button>
-                </form>
-              )}
+              {/* METHOD 2: OFFLINE SECURITY QUESTION RECOVERY */}
+              {forgotMethod === 'security_question' && (
+                <>
+                  {forgotStep === 1 && (
+                    <form onSubmit={handleForgotStep1} className="space-y-3.5">
+                      <p className="text-xs text-slate-500">
+                        Enter your registered email address or 10-digit mobile number to retrieve your offline security question.
+                      </p>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Email or Mobile Number
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={forgotIdentifier}
+                          onChange={e => setForgotIdentifier(e.target.value)}
+                          placeholder="e.g. tharrrrun@gmail.com or 9493371100"
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
+                      >
+                        {loading ? 'Looking up...' : 'Next: Retrieve Question'}
+                      </button>
 
-              {forgotStep === 3 && (
-                <form onSubmit={handleForgotStep3} className="space-y-3.5">
-                  <p className="text-xs text-slate-500">
-                    Step 3: Verification passed! Choose a new secure password.
-                  </p>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">New Password (min 6)</label>
-                    <input
-                      type="password"
-                      required
-                      value={newPassword}
-                      onChange={e => setNewPassword(e.target.value)}
-                      placeholder="New password"
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Confirm New Password</label>
-                    <input
-                      type="password"
-                      required
-                      value={confirmNewPassword}
-                      onChange={e => setConfirmNewPassword(e.target.value)}
-                      placeholder="Confirm new password"
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
-                  >
-                    {loading ? 'Updating Password...' : 'Reset & Save Password'}
-                  </button>
-                </form>
+                      <div className="text-center pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearAlerts();
+                            setForgotMethod('email_otp');
+                            setForgotOtpSent(false);
+                          }}
+                          className="text-xs font-semibold text-amber-700 hover:underline cursor-pointer"
+                        >
+                          ← Switch to Email OTP Verification
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {forgotStep === 2 && (
+                    <form onSubmit={handleForgotStep2} className="space-y-3.5">
+                      <p className="text-xs text-slate-500">
+                        Answer the security question you configured during registration.
+                      </p>
+                      <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl">
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block mb-1">Your Question:</span>
+                        <p className="text-xs sm:text-sm font-bold text-slate-900">{retrievedQuestion}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Your Answer</label>
+                        <input
+                          type="text"
+                          required
+                          autoFocus
+                          value={forgotAnswer}
+                          onChange={e => setForgotAnswer(e.target.value)}
+                          placeholder="Type your secret answer"
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
+                      >
+                        {loading ? 'Verifying...' : 'Next: Verify Answer'}
+                      </button>
+                    </form>
+                  )}
+
+                  {forgotStep === 3 && (
+                    <form onSubmit={handleForgotStep3} className="space-y-3.5">
+                      <p className="text-xs text-slate-500">
+                        Verification passed! Choose a new secure password.
+                      </p>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">New Password (min 6)</label>
+                        <input
+                          type="password"
+                          required
+                          value={newPassword}
+                          onChange={e => setNewPassword(e.target.value)}
+                          placeholder="New password"
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Confirm New Password</label>
+                        <input
+                          type="password"
+                          required
+                          value={confirmNewPassword}
+                          onChange={e => setConfirmNewPassword(e.target.value)}
+                          placeholder="Confirm new password"
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
+                      >
+                        {loading ? 'Updating Password...' : 'Reset & Save Password'}
+                      </button>
+                    </form>
+                  )}
+                </>
               )}
             </div>
           )}

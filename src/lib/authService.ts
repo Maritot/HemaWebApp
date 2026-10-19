@@ -616,6 +616,121 @@ export class AuthService {
     return accounts.filter(a => !a.id.startsWith('usr_m_')).map(sanitizeUser);
   }
 
+  /**
+   * Password Recovery Step 1 (Real Email OTP):
+   * Sends a real 6-digit verification code to the user's registered email inbox via Supabase.
+   */
+  static async sendPasswordResetOtp(identifier: string): Promise<{ success: boolean; maskedEmail: string; email: string }> {
+    const raw = identifier.trim();
+    const isPhone = isPhoneIdentifier(raw);
+    const normalizedPhone = isPhone ? normalizePhone(raw) : '';
+    const cleanEmail = !isPhone ? raw.toLowerCase() : '';
+
+    const accounts = getLocalAccounts();
+    let account = accounts.find(a => {
+      if (isPhone && a.phone) {
+        return normalizePhone(a.phone) === normalizedPhone;
+      }
+      return a.email.toLowerCase() === cleanEmail;
+    });
+
+    let targetEmail = account ? account.email : cleanEmail;
+
+    // If not found locally, query Supabase profiles
+    if (!targetEmail && isPhone && isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        if (supabase) {
+          const { data } = await supabase.from('profiles').select('email').ilike('phone', `%${normalizedPhone}%`).limit(1).single();
+          if (data?.email) targetEmail = data.email;
+        }
+      } catch {}
+    }
+
+    if (!targetEmail) {
+      throw new Error(
+        isPhone 
+          ? `No account found with mobile number ${raw}. Please check the number or create an account.`
+          : `No account found with email ${raw}. Please check the email or create an account.`
+      );
+    }
+
+    // Call Supabase to send real 6-digit OTP code to the user's email
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        const { error } = await supabase.auth.signInWithOtp({
+          email: targetEmail,
+          options: {
+            shouldCreateUser: false
+          }
+        });
+        if (error) {
+          throw new Error(error.message);
+        }
+      }
+    } else {
+      throw new Error('Cloud email service not configured. Please use your Security Recovery Question to reset offline.');
+    }
+
+    const masked = maskEmail(targetEmail);
+    return { success: true, maskedEmail: masked, email: targetEmail };
+  }
+
+  /**
+   * Password Recovery Step 2 (Real Email OTP):
+   * Verifies the 6-digit OTP code sent to email and securely updates the user's password.
+   */
+  static async verifyPasswordResetOtp(email: string, otpCode: string, newPassword: string): Promise<void> {
+    if (newPassword.length < 6) {
+      throw new Error('New password must be at least 6 characters.');
+    }
+    if (!otpCode || otpCode.trim().length < 6) {
+      throw new Error('Please enter the complete 6-digit verification code.');
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanToken = otpCode.trim();
+
+    // 1. Verify OTP with Supabase
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        const { data, error } = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: cleanToken,
+          type: 'email'
+        });
+
+        if (error) {
+          throw new Error(error.message || 'Invalid or expired verification code. Please check your email and try again.');
+        }
+
+        // Update password on Supabase
+        const { error: updateErr } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+        if (updateErr) {
+          console.warn('[AuthService] Supabase updateUser password error:', updateErr.message);
+        }
+      }
+    }
+
+    // 2. Update password hash in local vault
+    const accounts = getLocalAccounts();
+    const account = accounts.find(a => a.email.toLowerCase() === cleanEmail);
+    if (account) {
+      const newSalt = generateSalt();
+      const { hash: newHash } = await hashPassword(newPassword, newSalt);
+      account.salt = newSalt;
+      account.passwordHash = newHash;
+      account.updatedAt = new Date().toISOString();
+      saveLocalAccounts(accounts);
+    }
+
+    this.logout();
+  }
+
   // Deprecated shim kept for backwards compatibility
   static async loginWithPhoneOtp(rawPhone: string) {
     return { success: true, message: `Use your mobile number and password to sign in.` };
@@ -623,4 +738,17 @@ export class AuthService {
   static async verifyPhoneOtp(rawPhone: string, token: string) {
     throw new Error('Please sign in using your mobile number and password.');
   }
+}
+
+/**
+ * Masks an email address for secure, privacy-safe display (e.g. th****un@gmail.com)
+ */
+export function maskEmail(email: string): string {
+  const parts = email.split('@');
+  if (parts.length !== 2) return email;
+  const [user, domain] = parts;
+  if (user.length <= 2) return `${user[0]}*@${domain}`;
+  const start = user.slice(0, 2);
+  const end = user.slice(-2);
+  return `${start}****${end}@${domain}`;
 }

@@ -24,6 +24,8 @@ interface AuthContextType {
   signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   triggerSync: () => Promise<void>;
+  sendPasswordResetOtp: (identifier: string) => Promise<{ success: boolean; maskedEmail: string; email: string }>;
+  verifyPasswordResetOtp: (email: string, otpCode: string, newPassword: string) => Promise<void>;
   getSecurityQuestion: (identifier: string) => Promise<string>;
   verifySecurityAnswer: (identifier: string, answer: string) => Promise<string>;
   resetPassword: (resetToken: string, newPassword: string) => Promise<void>;
@@ -171,6 +173,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const sendPasswordResetOtp = async (identifier: string) => {
+    return AuthService.sendPasswordResetOtp(identifier);
+  };
+
+  const verifyPasswordResetOtp = async (email: string, otpCode: string, newPassword: string) => {
+    setIsLoading(true);
+    try {
+      await AuthService.verifyPasswordResetOtp(email, otpCode, newPassword);
+      refreshUsers();
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const getSecurityQuestion = async (identifier: string) => {
     return AuthService.getSecurityQuestion(identifier);
   };
@@ -198,6 +214,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         signInWithGoogle,
         logout,
         triggerSync,
+        sendPasswordResetOtp,
+        verifyPasswordResetOtp,
         getSecurityQuestion,
         verifySecurityAnswer,
         resetPassword,
