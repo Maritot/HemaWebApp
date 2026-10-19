@@ -413,9 +413,10 @@ export const AuthScreen: React.FC = () => {
                   <input
                     type="text"
                     required
+                    autoComplete="username"
                     value={signInIdentifier}
                     onChange={e => setSignInIdentifier(e.target.value)}
-                    placeholder="e.g. yourname@family.com or 9493371100"
+                    placeholder="name@family.com or 9876543210"
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
                   />
                 </div>
@@ -544,9 +545,11 @@ export const AuthScreen: React.FC = () => {
                     type="tel"
                     required
                     maxLength={10}
+                    autoComplete="tel"
+                    inputMode="tel"
                     value={signUpPhone}
                     onChange={e => setSignUpPhone(e.target.value.replace(/\D/g, ''))}
-                    placeholder="94933 71100"
+                    placeholder="98765 43210"
                     className="w-full pl-3 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-r-xl text-xs sm:text-sm font-semibold tracking-wide focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white"
                   />
                 </div>
@@ -565,6 +568,7 @@ export const AuthScreen: React.FC = () => {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       value={signUpPassword}
                       onChange={e => setSignUpPassword(e.target.value)}
                       placeholder="••••••••"
@@ -581,6 +585,7 @@ export const AuthScreen: React.FC = () => {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       value={signUpConfirmPassword}
                       onChange={e => setSignUpConfirmPassword(e.target.value)}
                       placeholder="••••••••"
@@ -630,6 +635,30 @@ export const AuthScreen: React.FC = () => {
                 <span>{loading ? 'Creating Secured Account...' : 'Create Secured Account'}</span>
                 {!loading && <ArrowRight size={16} />}
               </button>
+
+              {/* Google OAuth Option on Create Account */}
+              {isCloudConfigured && (
+                <div className="pt-2">
+                  <div className="relative my-3">
+                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200" /></div>
+                    <div className="relative flex justify-center text-[10px] uppercase font-bold text-slate-400"><span className="bg-white px-2">Or continue with</span></div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={handleGoogleSignIn}
+                    className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                    </svg>
+                    <span>Sign up with Google</span>
+                  </button>
+                </div>
+              )}
             </form>
           )}
 
@@ -640,7 +669,7 @@ export const AuthScreen: React.FC = () => {
                 <div className="flex items-center space-x-2">
                   <Key size={16} className="text-amber-600" />
                   <h3 className="text-xs sm:text-sm font-bold text-slate-900">
-                    {forgotMethod === 'email_otp' ? 'Verified OTP Password Reset' : 'Security Question Recovery'}
+                    Reset Your Password
                   </h3>
                 </div>
                 <button
@@ -653,7 +682,43 @@ export const AuthScreen: React.FC = () => {
                   }}
                   className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
                 >
-                  Back to Sign In
+                  ← Back to Sign In
+                </button>
+              </div>
+
+              {/* Recovery Method Tabs */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotMethod('security_question');
+                    clearAlerts();
+                    setForgotStep(1);
+                  }}
+                  className={`py-2 px-2 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center space-x-1.5 ${
+                    forgotMethod === 'security_question'
+                      ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <HelpCircle size={13} className={forgotMethod === 'security_question' ? 'text-amber-600' : ''} />
+                  <span>Security Question</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotMethod('email_otp');
+                    clearAlerts();
+                    setForgotOtpSent(false);
+                  }}
+                  className={`py-2 px-2 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center space-x-1.5 ${
+                    forgotMethod === 'email_otp'
+                      ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Mail size={13} className={forgotMethod === 'email_otp' ? 'text-amber-600' : ''} />
+                  <span>Email Code (OTP)</span>
                 </button>
               </div>
 
@@ -663,7 +728,7 @@ export const AuthScreen: React.FC = () => {
                   {!forgotOtpSent ? (
                     <form onSubmit={handleSendResetOtp} className="space-y-3.5">
                       <p className="text-xs text-slate-500 leading-relaxed">
-                        Enter your registered Email Address or 10-digit Mobile Number. We will dispatch a real 6-digit verification code directly to your email inbox.
+                        Enter your registered Email Address or 10-digit Mobile Number. We will dispatch a 6-digit verification code directly to your email inbox.
                       </p>
                       <div>
                         <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -674,9 +739,10 @@ export const AuthScreen: React.FC = () => {
                           <input
                             type="text"
                             required
+                            autoComplete="username"
                             value={forgotIdentifier}
                             onChange={e => setForgotIdentifier(e.target.value)}
-                            placeholder="e.g. tharrrrun@gmail.com or 9493371100"
+                            placeholder="name@family.com or 9876543210"
                             className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                           />
                         </div>
@@ -691,7 +757,8 @@ export const AuthScreen: React.FC = () => {
                         <span>{loading ? 'Sending Code...' : 'Send 6-Digit Verification Code'}</span>
                       </button>
 
-                      <div className="text-center pt-2 border-t border-slate-100">
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-center">
+                        <p className="text-[11px] text-slate-500 mb-1.5">No internet or email rate limit reached?</p>
                         <button
                           type="button"
                           onClick={() => {
@@ -699,9 +766,9 @@ export const AuthScreen: React.FC = () => {
                             setForgotMethod('security_question');
                             setForgotStep(1);
                           }}
-                          className="text-xs font-semibold text-slate-500 hover:text-amber-700 cursor-pointer"
+                          className="text-xs font-bold text-amber-700 hover:text-amber-800 hover:underline cursor-pointer"
                         >
-                          Can't access email? Reset using Security Question
+                          Use Security Question for Instant Reset →
                         </button>
                       </div>
                     </form>
@@ -734,6 +801,7 @@ export const AuthScreen: React.FC = () => {
                           required
                           maxLength={6}
                           autoFocus
+                          inputMode="numeric"
                           value={forgotOtpCode}
                           onChange={e => setForgotOtpCode(e.target.value.replace(/\D/g, ''))}
                           placeholder="• • • • • •"
@@ -750,6 +818,7 @@ export const AuthScreen: React.FC = () => {
                           <input
                             type={showPassword ? 'text' : 'password'}
                             required
+                            autoComplete="new-password"
                             value={newOtpPassword}
                             onChange={e => setNewOtpPassword(e.target.value)}
                             placeholder="Enter new password"
@@ -767,6 +836,7 @@ export const AuthScreen: React.FC = () => {
                           <input
                             type={showPassword ? 'text' : 'password'}
                             required
+                            autoComplete="new-password"
                             value={confirmNewOtpPassword}
                             onChange={e => setConfirmNewOtpPassword(e.target.value)}
                             placeholder="Re-enter new password"
@@ -816,9 +886,10 @@ export const AuthScreen: React.FC = () => {
                 <>
                   {forgotStep === 1 && (
                     <form onSubmit={handleForgotStep1} className="space-y-3.5">
-                      <p className="text-xs text-slate-500">
-                        Enter your registered email address or 10-digit mobile number to retrieve your offline security question.
-                      </p>
+                      <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900">
+                        <span className="font-bold block mb-0.5">🔒 Instant Offline Recovery</span>
+                        Answer your secret recovery question to unlock and reset your password immediately.
+                      </div>
                       <div>
                         <label className="block text-xs font-bold text-slate-700 mb-1">
                           Email or Mobile Number
@@ -826,18 +897,19 @@ export const AuthScreen: React.FC = () => {
                         <input
                           type="text"
                           required
+                          autoComplete="username"
                           value={forgotIdentifier}
                           onChange={e => setForgotIdentifier(e.target.value)}
-                          placeholder="e.g. tharrrrun@gmail.com or 9493371100"
+                          placeholder="name@family.com or 9876543210"
                           className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                         />
                       </div>
                       <button
                         type="submit"
-                        disabled={loading}
+                        disabled={loading || !forgotIdentifier.trim()}
                         className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
                       >
-                        {loading ? 'Looking up...' : 'Next: Retrieve Question'}
+                        {loading ? 'Looking up...' : 'Next: Retrieve Question →'}
                       </button>
 
                       <div className="text-center pt-2">
@@ -850,7 +922,7 @@ export const AuthScreen: React.FC = () => {
                           }}
                           className="text-xs font-semibold text-amber-700 hover:underline cursor-pointer"
                         >
-                          ← Switch to Email OTP Verification
+                          Prefer an email code? Switch to Email OTP
                         </button>
                       </div>
                     </form>

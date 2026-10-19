@@ -29,6 +29,7 @@ interface AuthContextType {
   getSecurityQuestion: (identifier: string) => Promise<string>;
   verifySecurityAnswer: (identifier: string, answer: string) => Promise<string>;
   resetPassword: (resetToken: string, newPassword: string) => Promise<void>;
+  resetPasswordForDeviceAccount: (identifier: string, newPassword: string) => Promise<void>;
   refreshUsers: () => void;
 }
 
@@ -67,27 +68,55 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (isSupabaseConfigured()) {
       const supabase = getSupabase();
       if (supabase) {
-        supabase.auth.getSession().then(({ data }) => {
-          if (data?.session?.user && !session) {
-            const sbUser = data.session.user;
-            const userProfile: UserProfile = {
-              id: sbUser.id,
-              name: sbUser.user_metadata?.full_name || 'Family Member',
-              email: sbUser.email || '',
-              phone: sbUser.phone || '',
-              createdAt: sbUser.created_at,
-              updatedAt: new Date().toISOString(),
-              lastLoginAt: new Date().toISOString(),
-              provider: 'supabase'
-            };
-            setUser(userProfile);
+        supabase.auth.getSession().then(async ({ data }) => {
+          if (data?.session && !session) {
+            const profile = await AuthService.handleCloudUserLogin(data.session);
+            setUser(profile);
             setToken(data.session.access_token);
             refreshUsers();
-            syncWithCloud(sbUser.id).catch(() => {});
           }
         }).catch(() => {});
       }
     }
+
+    // Native Capacitor App deep linking listener for Google OAuth callback
+    let removeDeepLink: (() => void) | undefined;
+    try {
+      import('@capacitor/app').then(({ App }) => {
+        App.addListener('appUrlOpen', async ({ url }) => {
+          try {
+            const { Browser } = await import('@capacitor/browser');
+            await Browser.close();
+          } catch {}
+
+          if (url && (url.includes('access_token') || url.includes('#') || url.includes('code='))) {
+            const supabase = getSupabase();
+            if (supabase) {
+              if (url.includes('#')) {
+                const hash = url.split('#')[1];
+                const params = new URLSearchParams(hash);
+                const accessToken = params.get('access_token');
+                const refreshToken = params.get('refresh_token');
+                if (accessToken) {
+                  const { data } = await supabase.auth.setSession({
+                    access_token: accessToken,
+                    refresh_token: refreshToken || ''
+                  });
+                  if (data?.session) {
+                    const profile = await AuthService.handleCloudUserLogin(data.session);
+                    setUser(profile);
+                    setToken(data.session.access_token);
+                    refreshUsers();
+                  }
+                }
+              }
+            }
+          }
+        }).then(sub => {
+          removeDeepLink = () => sub.remove();
+        }).catch(() => {});
+      }).catch(() => {});
+    } catch {}
 
     // Listen to cross-component auth state changes
     const handleAuthChange = (e: any) => {
@@ -199,6 +228,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     await AuthService.resetPassword(resetToken, newPassword);
   };
 
+  const resetPasswordForDeviceAccount = async (identifier: string, newPassword: string) => {
+    await AuthService.resetPasswordForDeviceAccount(identifier, newPassword);
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -219,6 +252,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         getSecurityQuestion,
         verifySecurityAnswer,
         resetPassword,
+        resetPasswordForDeviceAccount,
         refreshUsers
       }}
     >

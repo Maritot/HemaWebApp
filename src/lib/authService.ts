@@ -339,6 +339,8 @@ export class AuthService {
   /**
    * Unified Login: Authenticates with either Email Address OR Mobile Number + Password.
    * Both identifiers resolve to the EXACT SAME user profile and database partition.
+   * Prioritizes the local PBKDF2 cryptographic vault to guarantee 100% offline access
+   * and prevent cloud rate limits or unconfirmed email statuses from locking users out.
    */
   static async login(identifier: string, password: string): Promise<{ user: UserProfile; token: string }> {
     const rawInput = identifier.trim();
@@ -350,7 +352,7 @@ export class AuthService {
     const normalizedPhone = isPhone ? normalizePhone(rawInput) : '';
     const cleanEmail = !isPhone ? rawInput.toLowerCase() : '';
 
-    // Look up matching account in the local vault
+    // Look up matching account in the local cryptographic vault
     const accounts = getLocalAccounts();
     const matchedAccount = accounts.find(a => {
       if (isPhone && a.phone) {
@@ -361,7 +363,45 @@ export class AuthService {
 
     const targetEmail = matchedAccount ? matchedAccount.email : cleanEmail;
 
-    // 1. Try Supabase Cloud Auth first if configured and target email is known
+    // 1. If account is saved in local vault, verify password with PBKDF2-SHA256 FIRST
+    if (matchedAccount) {
+      const isLocalValid = await verifyPassword(password, matchedAccount.salt, matchedAccount.passwordHash);
+      if (isLocalValid) {
+        // Authenticated successfully via device cryptographic vault!
+        const nowIso = new Date().toISOString();
+        matchedAccount.lastLoginAt = nowIso;
+        saveLocalAccounts(accounts);
+
+        const token = generateSecureToken();
+        const session: AuthSession = {
+          token,
+          user: sanitizeUser(matchedAccount),
+          expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+        };
+
+        persistSession(session);
+
+        // In background (non-blocking): attempt cloud session establishment & sync
+        if (isSupabaseConfigured() && targetEmail) {
+          getSupabase()?.auth.signInWithPassword({
+            email: targetEmail,
+            password
+          }).then(res => {
+            if (res.data?.session?.access_token) {
+              session.token = res.data.session.access_token;
+              persistSession(session);
+              syncWithCloud(matchedAccount.id).catch(() => {});
+            }
+          }).catch(err => {
+            console.warn('[AuthService] Non-blocking cloud session sync note:', err.message);
+          });
+        }
+
+        return { user: sanitizeUser(matchedAccount), token };
+      }
+    }
+
+    // 2. If not found in local vault (e.g. user on a new device), check Supabase Cloud Auth
     if (isSupabaseConfigured() && targetEmail) {
       const supabase = getSupabase();
       if (supabase) {
@@ -371,12 +411,12 @@ export class AuthService {
             password
           });
 
-          if (!error && data.user) {
+          if (!error && data.user && data.session) {
             const userId = data.user.id;
             const nowIso = new Date().toISOString();
 
-            let name = data.user.user_metadata?.full_name || matchedAccount?.name || 'Family Member';
-            let phone = data.user.user_metadata?.phone || matchedAccount?.phone || (isPhone ? normalizedPhone : '');
+            let name = data.user.user_metadata?.full_name || 'Family Member';
+            let phone = data.user.user_metadata?.phone || (isPhone ? normalizedPhone : '');
             try {
               const { data: prof } = await supabase.from('profiles').select('*').eq('id', userId).single();
               if (prof) {
@@ -396,84 +436,56 @@ export class AuthService {
               provider: 'supabase'
             };
 
-            const token = data.session?.access_token || generateSecureToken();
+            const token = data.session.access_token || generateSecureToken();
             const session: AuthSession = {
               token,
               user: userProfile,
               expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
             };
 
-            // Update or cache in local vault
-            const existingIdx = accounts.findIndex(a => a.email === targetEmail || a.id === userId);
-            if (existingIdx !== -1) {
-              accounts[existingIdx].lastLoginAt = nowIso;
-              if (phone) accounts[existingIdx].phone = normalizePhone(phone);
-              saveLocalAccounts(accounts);
-            } else {
-              const salt = generateSalt();
-              const { hash } = await hashPassword(password, salt);
-              const localUser: StoredUserAccount = {
-                ...userProfile,
-                passwordHash: hash,
-                salt,
-                securityQuestion: "What is your favorite family traditional festival?",
-                securityAnswerHash: ""
-              };
-              accounts.push(localUser);
-              saveLocalAccounts(accounts);
-            }
+            // Cache downloaded profile in local vault with PBKDF2 hash
+            const salt = generateSalt();
+            const { hash } = await hashPassword(password, salt);
+            const localUser: StoredUserAccount = {
+              ...userProfile,
+              passwordHash: hash,
+              salt,
+              securityQuestion: "What is your favorite family traditional festival?",
+              securityAnswerHash: ""
+            };
+            const updatedAccounts = accounts.filter(a => a.id !== userId && a.email !== targetEmail);
+            updatedAccounts.push(localUser);
+            saveLocalAccounts(updatedAccounts);
 
             persistSession(session);
             syncWithCloud(userId).catch(e => console.warn('[AuthService] Post-login sync error:', e));
 
             return { user: userProfile, token };
-          } else if (error) {
-            if (error.message.includes('Invalid login credentials')) {
-              throw new Error('Incorrect password or unregistered account.');
-            }
           }
         } catch (err: any) {
-          if (err.message.includes('Incorrect') || err.message.includes('unregistered')) throw err;
-          console.warn('[AuthService] Cloud login unavailable, checking offline vault:', err.message);
+          console.warn('[AuthService] Cloud login query error:', err.message);
         }
       }
     }
 
-    // 2. Standalone / Offline Cryptographic Vault Login (PBKDF2-SHA256)
-    if (!matchedAccount) {
+    // 3. Neither matched
+    if (matchedAccount) {
+      throw new Error('Incorrect password. Please verify your password or tap "Forgot Password?" below.');
+    } else {
       throw new Error(
         isPhone 
-          ? `No account registered with mobile number ${rawInput}. Please create an account first.`
-          : `No account registered with email ${rawInput}. Please create an account first.`
+          ? `No account registered with mobile number ${rawInput}. Please check the number or tap "Create Account".`
+          : `No account registered with email ${rawInput}. Please check the email or tap "Create Account".`
       );
     }
-
-    const isValid = await verifyPassword(password, matchedAccount.salt, matchedAccount.passwordHash);
-    if (!isValid) {
-      throw new Error('Incorrect password. Please try again.');
-    }
-
-    const nowIso = new Date().toISOString();
-    matchedAccount.lastLoginAt = nowIso;
-    saveLocalAccounts(accounts);
-
-    const token = generateSecureToken();
-    const session: AuthSession = {
-      token,
-      user: sanitizeUser(matchedAccount),
-      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-    };
-
-    persistSession(session);
-    return { user: sanitizeUser(matchedAccount), token };
   }
 
   /**
-   * Google OAuth Sign-In with proper native Capacitor deep linking scheme
+   * Google OAuth Sign-In with proper native Capacitor Browser & deep linking scheme
    */
   static async signInWithGoogle(): Promise<void> {
     if (!isSupabaseConfigured()) {
-      throw new Error('Cloud database not configured. Please use Email/Mobile password login.');
+      throw new Error('Cloud database not configured. Please use Email or Mobile Number to sign in.');
     }
 
     const supabase = getSupabase();
@@ -487,16 +499,89 @@ export class AuthService {
     // On native Android APK, use custom app scheme deep link so Android brings Hema to the foreground
     const redirectUri = isNative ? 'com.hema.app://auth/callback' : window.location.origin;
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: redirectUri
-      }
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: redirectUri,
+          skipBrowserRedirect: isNative
+        }
+      });
 
-    if (error) {
-      throw new Error(error.message);
+      if (error) {
+        if (error.message.includes('not enabled') || error.message.includes('Unsupported provider')) {
+          throw new Error('Google Sign-In is not currently enabled in the cloud dashboard. Please sign in or create an account with your Email or Mobile Number.');
+        }
+        throw new Error(error.message);
+      }
+
+      if (isNative && data?.url) {
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: data.url, windowName: '_system' });
+      }
+    } catch (err: any) {
+      if (err.message.includes('not enabled') || err.message.includes('Unsupported provider')) {
+        throw new Error('Google Sign-In is not currently enabled in the cloud dashboard. Please sign in or create an account with your Email or Mobile Number.');
+      }
+      throw err;
     }
+  }
+
+  /**
+   * Processes a successful Supabase OAuth session, caches the user profile in the local vault,
+   * activates the DB partition, and starts cloud sync.
+   */
+  static async handleCloudUserLogin(supabaseSession: any): Promise<UserProfile> {
+    const sbUser = supabaseSession.user;
+    const userId = sbUser.id;
+    const nowIso = new Date().toISOString();
+
+    const email = sbUser.email || '';
+    const name = sbUser.user_metadata?.full_name || sbUser.user_metadata?.name || 'Google User';
+    const phone = normalizePhone(sbUser.user_metadata?.phone || sbUser.phone || '');
+
+    const userProfile: UserProfile = {
+      id: userId,
+      name,
+      email,
+      phone,
+      createdAt: sbUser.created_at || nowIso,
+      updatedAt: nowIso,
+      lastLoginAt: nowIso,
+      provider: 'supabase'
+    };
+
+    const token = supabaseSession.access_token || generateSecureToken();
+    const session: AuthSession = {
+      token,
+      user: userProfile,
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+    };
+
+    // Cache in local vault
+    const accounts = getLocalAccounts();
+    const existingIdx = accounts.findIndex(a => a.id === userId || (email && a.email.toLowerCase() === email.toLowerCase()));
+    if (existingIdx !== -1) {
+      accounts[existingIdx].name = name;
+      accounts[existingIdx].lastLoginAt = nowIso;
+      if (phone) accounts[existingIdx].phone = phone;
+    } else {
+      const salt = generateSalt();
+      const { hash } = await hashPassword(generateSecureToken(), salt);
+      accounts.push({
+        ...userProfile,
+        passwordHash: hash,
+        salt,
+        securityQuestion: "What is your favorite family traditional festival?",
+        securityAnswerHash: ""
+      });
+    }
+    saveLocalAccounts(accounts);
+    persistSession(session);
+    await migrateLegacyDataToUser(userId);
+    syncWithCloud(userId).catch(e => console.warn('[AuthService] Cloud sync error:', e));
+
+    return userProfile;
   }
 
   /**
@@ -529,11 +614,15 @@ export class AuthService {
       return a.email.toLowerCase() === cleanEmail;
     });
 
-    if (!account || !account.securityQuestion) {
-      throw new Error('No account found with this email or mobile number.');
+    if (!account) {
+      throw new Error(
+        isPhone 
+          ? `No account found with mobile number ${raw}.`
+          : `No account found with email ${raw}.`
+      );
     }
 
-    return account.securityQuestion;
+    return account.securityQuestion || "What is your mother's maiden name?";
   }
 
   /**
@@ -557,9 +646,12 @@ export class AuthService {
       throw new Error('Account not found.');
     }
 
-    const answerHash = await hashSecurityAnswer(answer, account.salt);
-    if (answerHash !== account.securityAnswerHash) {
-      throw new Error('Incorrect answer to security question.');
+    // If account was created with a security answer, verify it
+    if (account.securityAnswerHash) {
+      const answerHash = await hashSecurityAnswer(answer, account.salt);
+      if (answerHash !== account.securityAnswerHash) {
+        throw new Error('Incorrect answer to security question. Please try again.');
+      }
     }
 
     // Store single-use 15-minute reset token
@@ -579,6 +671,10 @@ export class AuthService {
    * Password Recovery Step 3: Complete offline reset with new password
    */
   static async resetPassword(resetToken: string, newPassword: string): Promise<void> {
+    if (newPassword.length < 6) {
+      throw new Error('New password must be at least 6 characters.');
+    }
+
     const tokens = JSON.parse(localStorage.getItem(STORAGE_KEY_RESET_TOKENS) || '[]');
     const tokenEntry = tokens.find((t: any) => t.token === resetToken && t.expiresAt > Date.now());
 
@@ -604,6 +700,54 @@ export class AuthService {
     // Remove used token
     const remainingTokens = tokens.filter((t: any) => t.token !== resetToken);
     localStorage.setItem(STORAGE_KEY_RESET_TOKENS, JSON.stringify(remainingTokens));
+
+    // Update cloud password if session active
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase?.auth.updateUser({ password: newPassword });
+      } catch {}
+    }
+
+    this.logout();
+  }
+
+  /**
+   * Direct password reset for accounts saved on this device.
+   * Provides immediate recovery for trusted personal device owners.
+   */
+  static async resetPasswordForDeviceAccount(identifier: string, newPassword: string): Promise<void> {
+    if (newPassword.length < 6) {
+      throw new Error('New password must be at least 6 characters.');
+    }
+    const raw = identifier.trim();
+    const isPhone = isPhoneIdentifier(raw);
+    const normalizedPhone = isPhone ? normalizePhone(raw) : '';
+    const cleanEmail = !isPhone ? raw.toLowerCase() : '';
+
+    const accounts = getLocalAccounts();
+    const account = accounts.find(a => {
+      if (isPhone && a.phone) return normalizePhone(a.phone) === normalizedPhone;
+      return a.email.toLowerCase() === cleanEmail || a.id === raw;
+    });
+
+    if (!account) {
+      throw new Error('No saved account found on this device with the provided details.');
+    }
+
+    const newSalt = generateSalt();
+    const { hash: newHash } = await hashPassword(newPassword, newSalt);
+    account.salt = newSalt;
+    account.passwordHash = newHash;
+    account.updatedAt = new Date().toISOString();
+    saveLocalAccounts(accounts);
+
+    if (isSupabaseConfigured() && account.email) {
+      try {
+        const supabase = getSupabase();
+        await supabase?.auth.updateUser({ password: newPassword });
+      } catch {}
+    }
 
     this.logout();
   }
@@ -666,6 +810,9 @@ export class AuthService {
           }
         });
         if (error) {
+          if (error.message.includes('rate limit')) {
+            throw new Error('Cloud email service rate limit reached. Please use your Security Recovery Question below to reset your password instantly.');
+          }
           throw new Error(error.message);
         }
       }
