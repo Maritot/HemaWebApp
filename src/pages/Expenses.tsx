@@ -19,7 +19,11 @@ import {
   PieChart,
   Briefcase,
   HandCoins,
-  AlertTriangle
+  AlertTriangle,
+  Landmark,
+  CreditCard,
+  Send,
+  Zap
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { resolveCategory, ResolvedCategory } from '@/lib/AutoCorrectEngine';
@@ -28,18 +32,20 @@ import {
   getTransactions, 
   deleteTransaction, 
   getDebts,
-  recordDebtPayment,
+  addDebt,
+  recordAtomicDebtPaymentAndCashflow,
+  validateTimestampInvariant,
   HemaDB, 
   DebtRecordItem, 
-  IncomeClassification 
+  CashflowClassification 
 } from '@/lib/db';
 import { useTranslation } from 'react-i18next';
 import { useSpeechToText } from '@/hooks/useSpeechToText';
-import { format, isSameDay } from 'date-fns';
+import { format, isSameDay, subDays } from 'date-fns';
 import { ConfirmDeleteModal } from '@/components/ConfirmDeleteModal';
 import { useAuth } from '@/context/AuthContext';
 
-type HistoryFilterType = 'ALL' | 'EXPENSE' | 'INCOME' | 'EARNED_INCOME' | 'DEBT_RECOVERY';
+type HistoryFilterType = 'ALL' | 'LIVING_EXPENSE' | 'EARNED_INCOME' | 'DEBT_MOVEMENTS';
 
 const Expenses: React.FC = () => {
   const { t } = useTranslation();
@@ -55,60 +61,84 @@ const Expenses: React.FC = () => {
   const [isSaved, setIsSaved] = useState(false);
   const [balance, setBalance] = useState<number>(0);
   
-  // Date and Time (Live Time Default)
+  // Temporal Invariants (Past & Now Only - No Future Dating)
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [txDate, setTxDate] = useState(todayStr);
   const [txTime, setTxTime] = useState(() => format(new Date(), 'HH:mm'));
 
-  // Income Classification (Regular vs Debt Recovery)
-  const [incomeType, setIncomeType] = useState<IncomeClassification>('REGULAR');
-  const [debtorDebts, setDebtorDebts] = useState<DebtRecordItem[]>([]);
+  // Detailed Cashflow Classification
+  const [cashflowCategory, setCashflowCategory] = useState<CashflowClassification>('LIVING_EXPENSE');
+  
+  // Debts linking state
+  const [activeDebts, setActiveDebts] = useState<DebtRecordItem[]>([]);
   const [selectedDebtId, setSelectedDebtId] = useState<string>('');
-  const [customDebtorName, setCustomDebtorName] = useState<string>('');
-  const [syncWithDebtLedger, setSyncWithDebtLedger] = useState<boolean>(true);
+  const [peerPersonName, setPeerPersonName] = useState<string>('');
 
   // All Transactions for History Log
   const [allTransactions, setAllTransactions] = useState<HemaDB['transactions']['value'][]>([]);
 
-  // History Filter state (decoupled from top form)
+  // History Filter state
   const [historyTab, setHistoryTab] = useState<HistoryFilterType>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState<string>('ALL'); // 'ALL' or '0'..'11'
-  const [selectedYear, setSelectedYear] = useState<string>('ALL'); // 'ALL' or '2026'..
-  const [specificDateFilter, setSpecificDateFilter] = useState<string>(''); // YYYY-MM-DD or empty
+  const [selectedMonth, setSelectedMonth] = useState<string>('ALL');
+  const [selectedYear, setSelectedYear] = useState<string>('ALL');
+  const [specificDateFilter, setSpecificDateFilter] = useState<string>('');
   const [deleteTargetTx, setDeleteTargetTx] = useState<HemaDB['transactions']['value'] | null>(null);
 
-  const setLiveTimeToNow = () => {
-    setTxDate(new Date().toISOString().split('T')[0]);
-    setTxTime(format(new Date(), 'HH:mm'));
+  // Quick Timestamp Presets
+  const setQuickTime = (preset: 'now' | 'earlier' | 'yesterday') => {
+    const now = new Date();
+    if (preset === 'now') {
+      setTxDate(todayStr);
+      setTxTime(format(now, 'HH:mm'));
+    } else if (preset === 'earlier') {
+      setTxDate(todayStr);
+      const earlierHour = Math.max(0, now.getHours() - 3);
+      setTxTime(`${String(earlierHour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+    } else if (preset === 'yesterday') {
+      const yesterday = subDays(now, 1);
+      setTxDate(yesterday.toISOString().split('T')[0]);
+      setTxTime('18:00');
+    }
   };
 
+  // Enforce no future time when date is today
+  useEffect(() => {
+    if (txDate === todayStr) {
+      const currentLiveTime = format(new Date(), 'HH:mm');
+      if (txTime > currentLiveTime) {
+        setTxTime(currentLiveTime);
+      }
+    }
+  }, [txDate, txTime, todayStr]);
+
   const fetchTransactions = async () => {
-    const txs = await getTransactions();
+    const [txs, debts] = await Promise.all([
+      getTransactions(),
+      getDebts()
+    ]);
     const sorted = txs.sort((a, b) => b.date - a.date);
     setAllTransactions(sorted);
+    setActiveDebts(debts);
 
     const totalInc = sorted.filter(t => t.type === 'INCOME').reduce((sum, t) => sum + t.amount, 0);
     const totalExp = sorted.filter(t => t.type === 'EXPENSE').reduce((sum, t) => sum + t.amount, 0);
     setBalance(totalInc - totalExp);
-
-    // Fetch active debtors who owe us money
-    try {
-      const debts = await getDebts();
-      const debtors = debts.filter(d => d.type === 'OWED_TO_US' && d.status !== 'SETTLED');
-      setDebtorDebts(debtors);
-    } catch {
-      setDebtorDebts([]);
-    }
   };
 
   useEffect(() => {
     fetchTransactions();
   }, [user?.id]);
 
-  // Decoupled: changing top form does NOT change bottom history filter
   const handleTypeChange = (newType: 'EXPENSE' | 'INCOME') => {
     setType(newType);
+    setSelectedDebtId('');
+    setPeerPersonName('');
+    if (newType === 'INCOME') {
+      setCashflowCategory('EARNED_INCOME');
+    } else {
+      setCashflowCategory('LIVING_EXPENSE');
+    }
   };
 
   // Sync voice input
@@ -120,7 +150,7 @@ const Expenses: React.FC = () => {
 
   // Auto-correct category for expenses
   useEffect(() => {
-    if (rawCategory.length > 2 && type === 'EXPENSE') {
+    if (rawCategory.length > 2 && type === 'EXPENSE' && cashflowCategory === 'LIVING_EXPENSE') {
       const timer = setTimeout(() => {
         setResolvedCategory(resolveCategory(rawCategory));
       }, 350);
@@ -128,16 +158,10 @@ const Expenses: React.FC = () => {
     } else {
       setResolvedCategory(null);
     }
-  }, [rawCategory, type]);
+  }, [rawCategory, type, cashflowCategory]);
 
   const handleSave = async () => {
-    if (!amount || isNaN(Number(amount))) return;
-    
-    const userInputLabel = rawCategory.trim();
-    let finalCategory = userInputLabel || 'Other';
-    if (type === 'EXPENSE' && resolvedCategory) {
-      finalCategory = resolvedCategory.categoryId;
-    }
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) return;
     
     // Combine Date + Time
     let timestamp = Date.now();
@@ -145,55 +169,149 @@ const Expenses: React.FC = () => {
       const [year, month, day] = txDate.split('-').map(Number);
       const [hours, minutes] = (txTime || format(new Date(), 'HH:mm')).split(':').map(Number);
       const dateObj = new Date(year, (month || 1) - 1, day || 1, hours || 0, minutes || 0, 0);
-      timestamp = dateObj.getTime();
+      timestamp = validateTimestampInvariant(dateObj.getTime());
     }
 
+    const amt = Number(amount);
+    let finalLabel = rawCategory.trim();
+    let finalCategory = 'General';
     let debtId: string | undefined = undefined;
     let debtorName: string | undefined = undefined;
 
-    if (type === 'INCOME' && incomeType === 'DEBT_RECOVERY') {
+    // --- CASE 1: Income -> Friend Repaid (Debt Recovery) ---
+    if (type === 'INCOME' && cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL') {
+      finalCategory = 'Debt Recovery';
       if (selectedDebtId && selectedDebtId !== '__CUSTOM__') {
+        const found = activeDebts.find(d => d.id === selectedDebtId);
+        debtorName = found ? found.person : peerPersonName.trim();
         debtId = selectedDebtId;
-        const matched = debtorDebts.find(d => d.id === selectedDebtId);
-        debtorName = matched ? matched.person : customDebtorName.trim();
       } else {
-        debtorName = customDebtorName.trim();
+        debtorName = peerPersonName.trim() || 'Debtor';
+      }
+      finalLabel = finalLabel || `Repayment from ${debtorName}`;
+
+      // Use atomic sync helper if linked to active debt
+      if (debtId) {
+        await recordAtomicDebtPaymentAndCashflow({
+          debtId,
+          amount: amt,
+          date: timestamp,
+          notes: notes.trim() || undefined,
+          syncToCashflow: true
+        });
+        setIsSaved(true);
+        await fetchTransactions();
+        resetForm();
+        return;
       }
     }
 
-    const defaultLabel = type === 'INCOME' && incomeType === 'DEBT_RECOVERY'
-      ? (debtorName ? `Debt Repayment (${debtorName})` : 'Debt Recovery')
-      : finalCategory;
+    // --- CASE 2: Income -> Borrowed Loan Taken ---
+    else if (type === 'INCOME' && cashflowCategory === 'DEBT_INFLOW_BORROWED') {
+      finalCategory = 'Loan Borrowed';
+      debtorName = peerPersonName.trim() || 'Creditor';
+      finalLabel = finalLabel || `Borrowed from ${debtorName}`;
+
+      // Auto-create debt record (WE_OWE) in Debts module
+      try {
+        const createdDebt = await addDebt({
+          person: debtorName,
+          amount: amt,
+          principalAmount: amt,
+          type: 'WE_OWE',
+          status: 'PENDING',
+          dueDate: Date.now() + 30 * 86400000,
+          dateCreated: timestamp,
+          notes: notes.trim() ? `Borrowed: ${notes.trim()}` : 'Hand loan taken',
+          payments: []
+        } as any);
+        debtId = (createdDebt as any)?.id;
+      } catch (err) {
+        console.warn('Could not auto-create debt record:', err);
+      }
+    }
+
+    // --- CASE 3: Expense -> Money Lent to Someone ---
+    else if (type === 'EXPENSE' && cashflowCategory === 'LOAN_GIVEN_OUTFLOW') {
+      finalCategory = 'Loan Given';
+      debtorName = peerPersonName.trim() || 'Borrower';
+      finalLabel = finalLabel || `Lent to ${debtorName}`;
+
+      // Auto-create debt record (OWED_TO_US) in Debts module
+      try {
+        const createdDebt = await addDebt({
+          person: debtorName,
+          amount: amt,
+          principalAmount: amt,
+          type: 'OWED_TO_US',
+          status: 'PENDING',
+          dueDate: Date.now() + 30 * 86400000,
+          dateCreated: timestamp,
+          notes: notes.trim() ? `Lent: ${notes.trim()}` : 'Hand loan given out',
+          payments: []
+        } as any);
+        debtId = (createdDebt as any)?.id;
+      } catch (err) {
+        console.warn('Could not auto-create debt record:', err);
+      }
+    }
+
+    // --- CASE 4: Expense -> Repaying Borrowed Loan ---
+    else if (type === 'EXPENSE' && cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW') {
+      finalCategory = 'Loan Repayment';
+      if (selectedDebtId && selectedDebtId !== '__CUSTOM__') {
+        const found = activeDebts.find(d => d.id === selectedDebtId);
+        debtorName = found ? found.person : peerPersonName.trim();
+        debtId = selectedDebtId;
+      } else {
+        debtorName = peerPersonName.trim() || 'Creditor';
+      }
+      finalLabel = finalLabel || `Repayment to ${debtorName}`;
+
+      if (debtId) {
+        await recordAtomicDebtPaymentAndCashflow({
+          debtId,
+          amount: amt,
+          date: timestamp,
+          notes: notes.trim() || undefined,
+          syncToCashflow: true
+        });
+        setIsSaved(true);
+        await fetchTransactions();
+        resetForm();
+        return;
+      }
+    }
+
+    // --- CASE 5: Standard Operating Income or Living Expense ---
+    else {
+      if (type === 'EXPENSE') {
+        finalCategory = resolvedCategory ? resolvedCategory.categoryId : (finalLabel || 'Living Expense');
+      } else {
+        finalCategory = finalLabel || 'Salary';
+      }
+    }
 
     await addTransaction({
       id: crypto.randomUUID(),
-      amount: Number(amount),
+      amount: amt,
       categoryId: finalCategory,
-      label: userInputLabel || defaultLabel,
+      label: finalLabel || finalCategory,
       type: type,
-      incomeType: type === 'INCOME' ? incomeType : undefined,
+      cashflowCategory: cashflowCategory,
+      incomeType: (type === 'INCOME' && cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL') ? 'DEBT_RECOVERY' : 'REGULAR',
       debtId: debtId,
       debtorName: debtorName,
       date: timestamp,
       notes: notes.trim()
     });
 
-    // Auto-record in Debt Tracker if selected and enabled
-    if (type === 'INCOME' && incomeType === 'DEBT_RECOVERY' && debtId && syncWithDebtLedger) {
-      try {
-        await recordDebtPayment(debtId, {
-          id: crypto.randomUUID(),
-          amount: Number(amount),
-          date: timestamp,
-          notes: notes.trim() ? `Collected via Income: ${notes.trim()}` : 'Payment collected and recorded via Income'
-        });
-      } catch (err) {
-        console.warn('Could not auto-sync debt payment:', err);
-      }
-    }
-
     setIsSaved(true);
     await fetchTransactions();
+    resetForm();
+  };
+
+  const resetForm = () => {
     setTimeout(() => {
       setIsSaved(false);
       setAmount('');
@@ -203,96 +321,86 @@ const Expenses: React.FC = () => {
       setTxTime(format(new Date(), 'HH:mm'));
       setResolvedCategory(null);
       setSelectedDebtId('');
-      setCustomDebtorName('');
-    }, 1500);
+      setPeerPersonName('');
+    }, 1200);
   };
 
   const handleDeleteTx = (tx: HemaDB['transactions']['value']) => {
     setDeleteTargetTx(tx);
   };
 
-  // Extract available years from transactions
-  const availableYears = useMemo(() => {
-    const years = new Set<string>();
-    allTransactions.forEach(t => {
-      years.add(String(new Date(t.date).getFullYear()));
-    });
-    return Array.from(years).sort().reverse();
-  }, [allTransactions]);
-
-  const monthsList = [
-    { value: '0', label: 'January' },
-    { value: '1', label: 'February' },
-    { value: '2', label: 'March' },
-    { value: '3', label: 'April' },
-    { value: '4', label: 'May' },
-    { value: '5', label: 'June' },
-    { value: '6', label: 'July' },
-    { value: '7', label: 'August' },
-    { value: '8', label: 'September' },
-    { value: '9', label: 'October' },
-    { value: '10', label: 'November' },
-    { value: '11', label: 'December' },
-  ];
-
-  // Spending Rate & Financial Health Analysis
+  // Spending Rate & Financial Health Analysis (True P&L)
   const earnedIncome = useMemo(() => {
     return allTransactions
-      .filter(t => t.type === 'INCOME' && t.incomeType !== 'DEBT_RECOVERY')
+      .filter(t => t.type === 'INCOME' && (
+        t.cashflowCategory === 'EARNED_INCOME' || 
+        t.cashflowCategory === 'ASSET_PROFIT' || 
+        (!t.cashflowCategory && t.incomeType !== 'DEBT_RECOVERY')
+      ))
       .reduce((sum, t) => sum + t.amount, 0);
   }, [allTransactions]);
 
-  const debtRecoveryIncome = useMemo(() => {
+  const debtInflow = useMemo(() => {
     return allTransactions
-      .filter(t => t.type === 'INCOME' && t.incomeType === 'DEBT_RECOVERY')
+      .filter(t => t.type === 'INCOME' && (
+        t.cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' || 
+        t.cashflowCategory === 'DEBT_INFLOW_BORROWED' ||
+        (!t.cashflowCategory && t.incomeType === 'DEBT_RECOVERY')
+      ))
       .reduce((sum, t) => sum + t.amount, 0);
   }, [allTransactions]);
 
-  const totalExpenses = useMemo(() => {
+  const livingExpenses = useMemo(() => {
     return allTransactions
-      .filter(t => t.type === 'EXPENSE')
+      .filter(t => t.type === 'EXPENSE' && (
+        t.cashflowCategory === 'LIVING_EXPENSE' || 
+        !t.cashflowCategory
+      ))
       .reduce((sum, t) => sum + t.amount, 0);
   }, [allTransactions]);
 
+  const debtOutflow = useMemo(() => {
+    return allTransactions
+      .filter(t => t.type === 'EXPENSE' && (
+        t.cashflowCategory === 'LOAN_GIVEN_OUTFLOW' || 
+        t.cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW'
+      ))
+      .reduce((sum, t) => sum + t.amount, 0);
+  }, [allTransactions]);
+
+  // True Spending Rate: Living Spends / Earned Income * 100
   const spendRatePercentage = useMemo(() => {
     if (earnedIncome <= 0) {
-      return totalExpenses > 0 ? 100 : 0;
+      return livingExpenses > 0 ? 100 : 0;
     }
-    return Math.round((totalExpenses / earnedIncome) * 100);
-  }, [earnedIncome, totalExpenses]);
+    return Math.round((livingExpenses / earnedIncome) * 100);
+  }, [earnedIncome, livingExpenses]);
 
-  const operationalSurplus = earnedIncome - totalExpenses;
+  const trueNetSavings = earnedIncome - livingExpenses;
 
   // Filtered transactions for the history log
   const filteredHistory = useMemo(() => {
     return allTransactions.filter(tx => {
       // 1. History Tab filter
-      if (historyTab === 'EXPENSE' && tx.type !== 'EXPENSE') return false;
-      if (historyTab === 'INCOME' && tx.type !== 'INCOME') return false;
-      if (historyTab === 'EARNED_INCOME' && (tx.type !== 'INCOME' || tx.incomeType === 'DEBT_RECOVERY')) return false;
-      if (historyTab === 'DEBT_RECOVERY' && (tx.type !== 'INCOME' || tx.incomeType !== 'DEBT_RECOVERY')) return false;
+      if (historyTab === 'LIVING_EXPENSE' && (tx.type !== 'EXPENSE' || tx.cashflowCategory === 'LOAN_GIVEN_OUTFLOW' || tx.cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW')) return false;
+      if (historyTab === 'EARNED_INCOME' && (tx.type !== 'INCOME' || tx.incomeType === 'DEBT_RECOVERY' || tx.cashflowCategory === 'DEBT_INFLOW_BORROWED')) return false;
+      if (historyTab === 'DEBT_MOVEMENTS' && (!tx.debtId && tx.incomeType !== 'DEBT_RECOVERY' && !['DEBT_RECOVERY_PRINCIPAL', 'DEBT_INFLOW_BORROWED', 'LOAN_GIVEN_OUTFLOW', 'DEBT_REPAYMENT_OUTFLOW'].includes(tx.cashflowCategory as any))) return false;
 
       // 2. Specific date filter
       if (specificDateFilter) {
         const targetDate = new Date(specificDateFilter);
-        if (!isSameDay(new Date(tx.date), targetDate)) {
-          return false;
-        }
+        if (!isSameDay(new Date(tx.date), targetDate)) return false;
       }
 
       const txDateObj = new Date(tx.date);
 
       // 3. Month filter
-      if (selectedMonth !== 'ALL' && txDateObj.getMonth() !== Number(selectedMonth)) {
-        return false;
-      }
+      if (selectedMonth !== 'ALL' && txDateObj.getMonth() !== Number(selectedMonth)) return false;
 
       // 4. Year filter
-      if (selectedYear !== 'ALL' && String(txDateObj.getFullYear()) !== selectedYear) {
-        return false;
-      }
+      if (selectedYear !== 'ALL' && String(txDateObj.getFullYear()) !== selectedYear) return false;
 
-      // 5. Search query (matches label, category, notes, debtorName, or amount)
+      // 5. Search query
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const label = (tx.label || '').toLowerCase();
@@ -317,9 +425,7 @@ const Expenses: React.FC = () => {
 
     filteredHistory.forEach(tx => {
       const key = format(new Date(tx.date), 'MMMM yyyy');
-      if (!map.has(key)) {
-        map.set(key, []);
-      }
+      if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(tx);
     });
 
@@ -344,7 +450,7 @@ const Expenses: React.FC = () => {
   return (
     <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-24">
       
-      {/* Header & Main Add Mode Switcher */}
+      {/* Header & Main Mode Switcher */}
       <div className="flex flex-col items-center">
         <h2 className="text-xl font-bold text-textMain mb-3">{t('expenses.title')}</h2>
         <div className="bg-borderLight p-1 rounded-full flex space-x-1 shadow-inner w-full max-w-xs">
@@ -371,15 +477,15 @@ const Expenses: React.FC = () => {
         </div>
       </div>
 
-      {/* Compact Main Add Form Card */}
+      {/* Main Add Form Card */}
       <Card className="border border-borderLight shadow-sm">
         <CardContent className="p-4 sm:p-5 space-y-4">
           
-          {/* Available Balance Header */}
+          {/* Available Cash Balance Header */}
           <div className="flex items-center justify-between bg-primary-50/80 px-3.5 py-2.5 rounded-xl border border-primary-100">
             <div className="flex items-center text-primary-900 text-xs font-semibold">
               <Wallet size={15} className="mr-1.5 text-primary-600" />
-              <span>{t('expenses.available_balance', 'Available Balance')}</span>
+              <span>Available Wallet Liquidity</span>
             </div>
             <span className={cn(
               "text-base font-bold",
@@ -405,155 +511,237 @@ const Expenses: React.FC = () => {
             </div>
           </div>
 
-          {/* Income Classification Toggle (Only when Income is active) */}
-          {type === 'INCOME' && (
-            <div className="space-y-2 pt-1 border-t border-borderLight/60">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-textMain flex items-center gap-1">
-                  <span>Classification</span>
-                  <span className="text-[10px] text-textMuted font-normal">(Spend Rate Tracking)</span>
+          {/* Dynamic Classification Category Selector */}
+          <div className="space-y-2 pt-1 border-t border-borderLight/60">
+            <label className="text-xs font-bold text-textMain flex items-center justify-between">
+              <span>{type === 'INCOME' ? 'Inflow Classification' : 'Outflow Nature'}</span>
+              <span className="text-[10px] text-textMuted font-normal">Isolates Salary from Debts</span>
+            </label>
+
+            {/* Income 3-Way Classification */}
+            {type === 'INCOME' ? (
+              <div className="grid grid-cols-3 gap-1.5 text-center">
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('EARNED_INCOME')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'EARNED_INCOME'
+                      ? "bg-green-50 border-green-500 text-green-950 ring-1 ring-green-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <Briefcase size={14} className={cashflowCategory === 'EARNED_INCOME' ? "text-green-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Salary & Profits</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('DEBT_RECOVERY_PRINCIPAL')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL'
+                      ? "bg-amber-50 border-amber-500 text-amber-950 ring-1 ring-amber-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <HandCoins size={14} className={cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' ? "text-amber-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Friend Repaid Me</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('DEBT_INFLOW_BORROWED')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'DEBT_INFLOW_BORROWED'
+                      ? "bg-blue-50 border-blue-500 text-blue-950 ring-1 ring-blue-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <Landmark size={14} className={cashflowCategory === 'DEBT_INFLOW_BORROWED' ? "text-blue-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Loan Taken by Me</span>
+                </button>
+              </div>
+            ) : (
+              /* Expense 3-Way Classification */
+              <div className="grid grid-cols-3 gap-1.5 text-center">
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('LIVING_EXPENSE')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'LIVING_EXPENSE'
+                      ? "bg-red-50 border-red-500 text-red-950 ring-1 ring-red-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <IndianRupee size={14} className={cashflowCategory === 'LIVING_EXPENSE' ? "text-red-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Living Expense</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('LOAN_GIVEN_OUTFLOW')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'LOAN_GIVEN_OUTFLOW'
+                      ? "bg-amber-50 border-amber-500 text-amber-950 ring-1 ring-amber-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <Send size={14} className={cashflowCategory === 'LOAN_GIVEN_OUTFLOW' ? "text-amber-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Money I Lent</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCashflowCategory('DEBT_REPAYMENT_OUTFLOW')}
+                  className={cn(
+                    "p-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center gap-1 cursor-pointer",
+                    cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW'
+                      ? "bg-purple-50 border-purple-500 text-purple-950 ring-1 ring-purple-500 shadow-2xs"
+                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
+                  )}
+                >
+                  <CreditCard size={14} className={cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW' ? "text-purple-600" : "text-textMuted"} />
+                  <span className="text-[11px] leading-tight">Loan Repaid by Me</span>
+                </button>
+              </div>
+            )}
+
+            {/* Debt Selection Drawer if linked category is chosen */}
+            {(cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' || cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW') && (
+              <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2 animate-in fade-in">
+                <label className="text-xs font-bold text-amber-950 block">
+                  {cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' ? 'Select Debtor Who Repaid:' : 'Select Creditor You Repaid:'}
                 </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIncomeType('REGULAR');
-                    setSelectedDebtId('');
+                
+                <select
+                  value={selectedDebtId}
+                  onChange={(e) => {
+                    setSelectedDebtId(e.target.value);
+                    const found = activeDebts.find(d => d.id === e.target.value);
+                    if (found) setRawCategory(`${found.person} Repayment`);
                   }}
-                  className={cn(
-                    "p-2.5 rounded-xl border text-xs font-bold transition-all flex flex-col items-start gap-0.5 cursor-pointer text-left",
-                    incomeType === 'REGULAR'
-                      ? "bg-green-50 border-green-500 text-green-950 shadow-xs ring-1 ring-green-500"
-                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
-                  )}
+                  className="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-semibold text-slate-800 outline-none"
                 >
-                  <div className="flex items-center gap-1.5 text-xs font-bold">
-                    <Briefcase size={14} className={incomeType === 'REGULAR' ? "text-green-600" : "text-textMuted"} />
-                    <span>Regular / Earned</span>
-                  </div>
-                  <span className="text-[10px] font-normal text-textMuted">Salary, Business, Rent</span>
-                </button>
+                  <option value="">-- Choose from Active Khata Loans --</option>
+                  {activeDebts
+                    .filter(d => cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' ? d.type === 'OWED_TO_US' : d.type === 'WE_OWE')
+                    .map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.person} (Pending: ₹{d.amount.toLocaleString('en-IN')})
+                      </option>
+                    ))}
+                  <option value="__CUSTOM__">Other / Unlisted Person</option>
+                </select>
 
-                <button
-                  type="button"
-                  onClick={() => setIncomeType('DEBT_RECOVERY')}
-                  className={cn(
-                    "p-2.5 rounded-xl border text-xs font-bold transition-all flex flex-col items-start gap-0.5 cursor-pointer text-left",
-                    incomeType === 'DEBT_RECOVERY'
-                      ? "bg-amber-50 border-amber-500 text-amber-950 shadow-xs ring-1 ring-amber-500"
-                      : "bg-surface border-borderLight text-textMuted hover:border-slate-300"
-                  )}
-                >
-                  <div className="flex items-center gap-1.5 text-xs font-bold">
-                    <HandCoins size={14} className={incomeType === 'DEBT_RECOVERY' ? "text-amber-600" : "text-textMuted"} />
-                    <span>Debt Recovery</span>
-                  </div>
-                  <span className="text-[10px] font-normal text-textMuted">Returned loan principal</span>
-                </button>
+                {(!selectedDebtId || selectedDebtId === '__CUSTOM__') && (
+                  <input
+                    type="text"
+                    value={peerPersonName}
+                    onChange={(e) => setPeerPersonName(e.target.value)}
+                    placeholder="Enter person's name (e.g. Suresh, Relative)"
+                    className="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-medium text-slate-800 outline-none placeholder:text-slate-400"
+                  />
+                )}
+              </div>
+            )}
+
+            {(cashflowCategory === 'DEBT_INFLOW_BORROWED' || cashflowCategory === 'LOAN_GIVEN_OUTFLOW') && (
+              <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl space-y-2 animate-in fade-in">
+                <label className="text-xs font-bold text-blue-950 block">
+                  {cashflowCategory === 'DEBT_INFLOW_BORROWED' ? 'Who gave you this loan?' : 'To whom did you lend this money?'}
+                </label>
+                <input
+                  type="text"
+                  value={peerPersonName}
+                  onChange={(e) => setPeerPersonName(e.target.value)}
+                  placeholder="Enter person or bank name (e.g. Bank Gold Loan, Ramesh)"
+                  className="w-full p-2 bg-white rounded-lg border border-blue-300 text-xs font-medium text-slate-800 outline-none placeholder:text-slate-400"
+                />
+                <p className="text-[10px] text-blue-800">
+                  ⚡ Auto-creates a new record in your Debts & Khata module automatically.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Category/Source Input for Living Spends / Salary */}
+          {(cashflowCategory === 'LIVING_EXPENSE' || cashflowCategory === 'EARNED_INCOME') && (
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-textMain">
+                {type === 'EXPENSE' ? "Whom or What was this for?" : t('expenses.income_source', 'Source of Income')}
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={rawCategory}
+                  onChange={(e) => setRawCategory(e.target.value)}
+                  placeholder={type === 'EXPENSE' ? "e.g., Petrol, Swiggy, Kiranam, Milk" : "e.g., Salary, Rent, Dividends"}
+                  className="w-full p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-sm pr-12"
+                />
+                {hasSupport && (
+                  <button 
+                    type="button"
+                    onClick={startListening}
+                    className={cn(
+                      "absolute right-2.5 top-2.5 p-1.5 rounded-full transition-colors",
+                      isListening ? "bg-red-100 text-red-600 animate-pulse" : "text-primary-600 bg-primary-50 hover:bg-primary-100"
+                    )}
+                    title="Voice input"
+                  >
+                    <Mic size={16} />
+                  </button>
+                )}
               </div>
 
-              {/* Debt Recovery Person Selector */}
-              {incomeType === 'DEBT_RECOVERY' && (
-                <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2 animate-in fade-in">
-                  <label className="text-xs font-bold text-amber-900 block">
-                    Whom is this repayment from?
-                  </label>
-
-                  {debtorDebts.length > 0 ? (
-                    <select
-                      value={selectedDebtId}
-                      onChange={(e) => {
-                        setSelectedDebtId(e.target.value);
-                        const found = debtorDebts.find(d => d.id === e.target.value);
-                        if (found) {
-                          setRawCategory(`Loan Repayment: ${found.person}`);
-                        }
-                      }}
-                      className="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-semibold text-slate-800 outline-none"
-                    >
-                      <option value="">-- Select Debtor from Active Loans --</option>
-                      {debtorDebts.map(d => (
-                        <option key={d.id} value={d.id}>
-                          {d.person} (Pending: ₹{d.amount.toLocaleString('en-IN')})
-                        </option>
-                      ))}
-                      <option value="__CUSTOM__">Other / Unlisted Debtor</option>
-                    </select>
-                  ) : null}
-
-                  {(!selectedDebtId || selectedDebtId === '__CUSTOM__' || debtorDebts.length === 0) && (
-                    <input
-                      type="text"
-                      value={customDebtorName}
-                      onChange={(e) => {
-                        setCustomDebtorName(e.target.value);
-                        setRawCategory(e.target.value ? `Loan Repayment: ${e.target.value}` : '');
-                      }}
-                      placeholder="Debtor person's name (e.g. Suresh, Family Friend)"
-                      className="w-full p-2 bg-white rounded-lg border border-amber-300 text-xs font-medium text-slate-800 outline-none placeholder:text-slate-400"
-                    />
-                  )}
-
-                  {selectedDebtId && selectedDebtId !== '__CUSTOM__' && (
-                    <label className="flex items-center space-x-2 text-[11px] font-semibold text-amber-950 cursor-pointer pt-0.5">
-                      <input
-                        type="checkbox"
-                        checked={syncWithDebtLedger}
-                        onChange={(e) => setSyncWithDebtLedger(e.target.checked)}
-                        className="rounded text-amber-600 focus:ring-amber-500"
-                      />
-                      <span>Auto-record repayment against their loan balance in Debts</span>
-                    </label>
-                  )}
+              {type === 'EXPENSE' && resolvedCategory && rawCategory.length > 2 && (
+                <div className="flex items-center mt-1.5 p-2 bg-primary-50 text-primary-900 rounded-lg text-xs border border-primary-100 animate-in fade-in">
+                  <Wand2 size={14} className="mr-1.5 text-primary-600 shrink-0" />
+                  <span>
+                    Grouped category: <strong className="font-bold text-primary-700">{resolvedCategory.categoryId}</strong>
+                  </span>
                 </div>
               )}
             </div>
           )}
 
-          {/* Dynamic Category/Source Input */}
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-textMain">
-              {type === 'EXPENSE' ? "Whom or What was this for?" : t('expenses.income_source', 'Source of Income')}
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={rawCategory}
-                onChange={(e) => setRawCategory(e.target.value)}
-                placeholder={type === 'EXPENSE' ? "e.g., Petrol, Swiggy, Kiranam, Milk" : "e.g., Salary, Rent, Dividends"}
-                className="w-full p-3 bg-background rounded-xl border border-borderLight focus:border-primary-400 focus:ring-1 focus:ring-primary-100 outline-none text-sm transition-all pr-12"
-              />
-              {hasSupport && (
-                <button 
-                  type="button"
-                  onClick={startListening}
-                  className={cn(
-                    "absolute right-2.5 top-2.5 p-1.5 rounded-full transition-colors",
-                    isListening ? "bg-red-100 text-red-600 animate-pulse" : "text-primary-600 bg-primary-50 hover:bg-primary-100"
-                  )}
-                  title="Voice input"
-                >
-                  <Mic size={16} />
-                </button>
-              )}
+          {/* Quick Date/Time Chips (Past & Now Only) */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-textMuted uppercase tracking-wider">Quick Presets</span>
+              <span className="text-[10px] text-textMuted">Past & Present Only</span>
             </div>
-
-            {/* Auto-Correct Pill */}
-            {type === 'EXPENSE' && resolvedCategory && rawCategory.length > 2 && (
-              <div className="flex items-center mt-1.5 p-2 bg-primary-50 text-primary-900 rounded-lg text-xs border border-primary-100 animate-in fade-in">
-                <Wand2 size={14} className="mr-1.5 text-primary-600 shrink-0" />
-                <span>
-                  Grouped category: <strong className="font-bold text-primary-700">{resolvedCategory.categoryId}</strong> (Original label "{rawCategory.trim()}" preserved)
-                </span>
-              </div>
-            )}
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setQuickTime('now')}
+                className="flex-1 py-1 px-2 rounded-lg bg-primary-50 hover:bg-primary-100 text-primary-800 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer border border-primary-200"
+              >
+                <Zap size={11} className="text-amber-500" />
+                <span>Just Now</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickTime('earlier')}
+                className="flex-1 py-1 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold cursor-pointer"
+              >
+                Earlier Today
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickTime('yesterday')}
+                className="flex-1 py-1 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold cursor-pointer"
+              >
+                Yesterday
+              </button>
+            </div>
           </div>
 
           {/* Date, Time & Notes Input Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {/* Date & Time Picker */}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-textMain flex items-center">
@@ -569,29 +757,19 @@ const Expenses: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-textMain flex items-center">
-                    <Clock size={13} className="mr-1 text-primary-600" /> Time
-                  </label>
-                  <button
-                    type="button"
-                    onClick={setLiveTimeToNow}
-                    className="text-[10px] text-primary-600 hover:text-primary-800 font-bold flex items-center gap-0.5 cursor-pointer"
-                    title="Refresh to live time"
-                  >
-                    <RefreshCw size={10} /> Live
-                  </button>
-                </div>
+                <label className="text-xs font-semibold text-textMain flex items-center">
+                  <Clock size={13} className="mr-1 text-primary-600" /> Time
+                </label>
                 <input
                   type="time"
                   value={txTime}
+                  max={txDate === todayStr ? format(new Date(), 'HH:mm') : undefined}
                   onChange={(e) => setTxTime(e.target.value)}
                   className="w-full p-2.5 bg-background rounded-xl border border-borderLight focus:border-primary-400 outline-none text-xs text-textMain font-mono"
                 />
               </div>
             </div>
 
-            {/* Notes Input */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-textMain">{t('expenses.notes')}</label>
               <input
@@ -631,7 +809,7 @@ const Expenses: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* ================= REAL SPENDING VS EARNED INCOME HEALTH CARD ================= */}
+      {/* REAL SPENDING VS TRUE EARNED INCOME (P&L HEALTH CARD) */}
       <Card className="border border-slate-200/90 shadow-2xs bg-gradient-to-br from-white via-slate-50/50 to-primary-50/30 overflow-hidden">
         <CardContent className="p-4 sm:p-5 space-y-3.5">
           <div className="flex items-center justify-between">
@@ -640,12 +818,12 @@ const Expenses: React.FC = () => {
                 <PieChart size={17} />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-textMain">Spending Rate vs True Earnings</h3>
-                <p className="text-[11px] text-textMuted">Distinguishes earned income from debt recovery</p>
+                <h3 className="font-bold text-sm text-textMain">True Household P&L Scorecard</h3>
+                <p className="text-[11px] text-textMuted">Salary vs Living Spends (Excludes Loans)</p>
               </div>
             </div>
 
-            {/* Spending Rate Badge */}
+            {/* Spend Rate Badge */}
             <span className={cn(
               "text-xs font-bold px-2.5 py-1 rounded-full border",
               spendRatePercentage <= 75
@@ -654,38 +832,38 @@ const Expenses: React.FC = () => {
                   ? "bg-amber-50 text-amber-800 border-amber-200"
                   : "bg-red-50 text-red-800 border-red-200"
             )}>
-              Spend Rate: {earnedIncome > 0 ? `${spendRatePercentage}%` : (totalExpenses > 0 ? '100%+' : '0%')}
+              Spend Rate: {earnedIncome > 0 ? `${spendRatePercentage}%` : (livingExpenses > 0 ? '100%+' : '0%')}
             </span>
           </div>
 
-          {/* Metric Grid: Earned Income vs Debt Recovery vs Total Expenses */}
+          {/* Metric Grid */}
           <div className="grid grid-cols-3 gap-2 text-center pt-1">
             <div className="p-2.5 rounded-xl bg-white border border-emerald-100 shadow-2xs">
-              <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block">Earned Income</span>
+              <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block">True Earnings</span>
               <span className="text-xs sm:text-sm font-extrabold text-emerald-900 mt-0.5 block truncate">
                 ₹{earnedIncome.toLocaleString('en-IN')}
               </span>
-              <span className="text-[9px] text-textMuted">Salary & Profit</span>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-white border border-amber-100 shadow-2xs">
-              <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider block">Debt Recovered</span>
-              <span className="text-xs sm:text-sm font-extrabold text-amber-900 mt-0.5 block truncate">
-                ₹{debtRecoveryIncome.toLocaleString('en-IN')}
-              </span>
-              <span className="text-[9px] text-textMuted">Capital Returned</span>
+              <span className="text-[9px] text-textMuted">Salary & Yields</span>
             </div>
 
             <div className="p-2.5 rounded-xl bg-white border border-red-100 shadow-2xs">
-              <span className="text-[10px] font-bold text-red-700 uppercase tracking-wider block">Total Expenses</span>
+              <span className="text-[10px] font-bold text-red-700 uppercase tracking-wider block">Living Expenses</span>
               <span className="text-xs sm:text-sm font-extrabold text-red-900 mt-0.5 block truncate">
-                ₹{totalExpenses.toLocaleString('en-IN')}
+                ₹{livingExpenses.toLocaleString('en-IN')}
               </span>
-              <span className="text-[9px] text-textMuted">Spending Outflow</span>
+              <span className="text-[9px] text-textMuted">Lifestyle Outflow</span>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-white border border-blue-100 shadow-2xs">
+              <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider block">Debt Inflows</span>
+              <span className="text-xs sm:text-sm font-extrabold text-blue-900 mt-0.5 block truncate">
+                ₹{debtInflow.toLocaleString('en-IN')}
+              </span>
+              <span className="text-[9px] text-textMuted">Recovered/Borrowed</span>
             </div>
           </div>
 
-          {/* Health Status Insight Note */}
+          {/* Net Household Savings Summary */}
           <div className={cn(
             "p-3 rounded-xl border text-xs flex items-start space-x-2.5",
             spendRatePercentage <= 75
@@ -700,19 +878,19 @@ const Expenses: React.FC = () => {
               <AlertTriangle size={16} className={spendRatePercentage <= 100 ? "text-amber-600 shrink-0 mt-0.5" : "text-red-600 shrink-0 mt-0.5"} />
             )}
             <div className="text-[11px] leading-relaxed">
-              {earnedIncome === 0 && totalExpenses === 0 ? (
-                <span>Log your salary and daily expenses to track whether your household is spending within real earnings.</span>
+              {earnedIncome === 0 && livingExpenses === 0 ? (
+                <span>Log your monthly salary and daily expenses to track whether your household is spending within real earnings.</span>
               ) : spendRatePercentage <= 75 ? (
                 <span>
-                  <strong>Healthy Household Budget!</strong> You have spent {spendRatePercentage}% of your earned income. Operational surplus: <strong className="text-emerald-700 font-bold">+₹{operationalSurplus.toLocaleString('en-IN')}</strong>. Debt recoveries remain safely in reserve!
+                  <strong>Healthy Surplus!</strong> You have spent {spendRatePercentage}% of your real earnings. True Net Savings: <strong className="text-emerald-700 font-bold">+₹{trueNetSavings.toLocaleString('en-IN')}</strong>. Debt recoveries remain safely in reserve!
                 </span>
               ) : spendRatePercentage <= 100 ? (
                 <span>
-                  <strong>Approaching Budget Limit:</strong> You have spent {spendRatePercentage}% of your earned revenue. Remaining surplus: <strong className="text-amber-700 font-bold">+₹{operationalSurplus.toLocaleString('en-IN')}</strong>. Monitor non-essential spends.
+                  <strong>Caution (Break-Even Zone):</strong> You have spent {spendRatePercentage}% of your earned revenue. Net Surplus: <strong className="text-amber-700 font-bold">+₹{trueNetSavings.toLocaleString('en-IN')}</strong>.
                 </span>
               ) : (
                 <span>
-                  <strong>Deficit Warning ({spendRatePercentage}% spent):</strong> Expenses exceed earned revenue by <strong className="text-red-700 font-bold">₹{Math.abs(operationalSurplus).toLocaleString('en-IN')}</strong>! {debtRecoveryIncome > 0 ? "You are burning through recovered loan capital to fund day-to-day spending." : "You are dipping into reserves or debt."}
+                  <strong>Deficit Warning ({spendRatePercentage}% spent):</strong> Expenses exceed earned revenue by <strong className="text-red-700 font-bold">₹{Math.abs(trueNetSavings).toLocaleString('en-IN')}</strong>! You are spending borrowed money or dipping into capital reserves.
                 </span>
               )}
             </div>
@@ -720,7 +898,7 @@ const Expenses: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* ================= TRANSACTION HISTORY & LOG SECTION ================= */}
+      {/* TRANSACTION HISTORY & LOG SECTION */}
       <div className="space-y-3 pt-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-1.5">
@@ -732,7 +910,7 @@ const Expenses: React.FC = () => {
           </span>
         </div>
 
-        {/* 4-Section Slider [ ALL | EXPENSES | EARNED INCOME | DEBT RECOVERY ] */}
+        {/* 4-Section Slider */}
         <div className="bg-primary-50/80 p-1 rounded-xl border border-primary-200/60 flex space-x-1 shadow-2xs overflow-x-auto scrollbar-hide">
           <button 
             type="button"
@@ -746,13 +924,13 @@ const Expenses: React.FC = () => {
           </button>
           <button 
             type="button"
-            onClick={() => setHistoryTab('EXPENSE')}
+            onClick={() => setHistoryTab('LIVING_EXPENSE')}
             className={cn(
               "flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer",
-              historyTab === 'EXPENSE' ? "bg-white shadow text-red-600 border border-red-200" : "text-primary-700 hover:text-primary-950"
+              historyTab === 'LIVING_EXPENSE' ? "bg-white shadow text-red-600 border border-red-200" : "text-primary-700 hover:text-primary-950"
             )}
           >
-            Expenses
+            Living Expenses
           </button>
           <button 
             type="button"
@@ -766,26 +944,25 @@ const Expenses: React.FC = () => {
           </button>
           <button 
             type="button"
-            onClick={() => setHistoryTab('DEBT_RECOVERY')}
+            onClick={() => setHistoryTab('DEBT_MOVEMENTS')}
             className={cn(
               "flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer",
-              historyTab === 'DEBT_RECOVERY' ? "bg-white shadow text-amber-800 border border-amber-200" : "text-primary-700 hover:text-primary-950"
+              historyTab === 'DEBT_MOVEMENTS' ? "bg-white shadow text-amber-800 border border-amber-200" : "text-primary-700 hover:text-primary-950"
             )}
           >
-            Debt Recovery
+            Debt Movements
           </button>
         </div>
 
-        {/* Search Bar & Date / Month / Year Filter Controls */}
+        {/* Search Bar & Filters */}
         <div className="space-y-2 bg-surface p-3 rounded-2xl border border-borderLight shadow-2xs">
-          {/* Search Bar with Search Icon */}
           <div className="relative">
             <Search size={15} className="absolute left-3 top-3 text-textMuted" />
             <input 
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by label (e.g. Petrol), category, debtor name, or notes..."
+              placeholder="Search by label (e.g. Petrol), category, person, or notes..."
               className="w-full pl-9 pr-8 py-2 bg-background rounded-xl border border-borderLight text-xs focus:border-primary-400 outline-none"
             />
             {searchQuery && (
@@ -799,33 +976,29 @@ const Expenses: React.FC = () => {
             )}
           </div>
 
-          {/* Month, Year & Date Specific Dropdowns */}
           <div className="grid grid-cols-3 gap-2 text-xs">
-            {/* Month Filter */}
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
               className="p-2 bg-background rounded-xl border border-borderLight text-textMain outline-none text-xs"
             >
               <option value="ALL">All Months</option>
-              {monthsList.map(m => (
-                <option key={m.value} value={m.value}>{m.label}</option>
+              {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, idx) => (
+                <option key={m} value={String(idx)}>{m}</option>
               ))}
             </select>
 
-            {/* Year Filter */}
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(e.target.value)}
               className="p-2 bg-background rounded-xl border border-borderLight text-textMain outline-none text-xs"
             >
               <option value="ALL">All Years</option>
-              {availableYears.map(yr => (
-                <option key={yr} value={yr}>{yr}</option>
+              {Array.from(new Set(allTransactions.map(t => new Date(t.date).getFullYear()))).map(yr => (
+                <option key={yr} value={String(yr)}>{yr}</option>
               ))}
             </select>
 
-            {/* Specific Day Picker */}
             <input
               type="date"
               value={specificDateFilter}
@@ -836,7 +1009,6 @@ const Expenses: React.FC = () => {
             />
           </div>
 
-          {/* Clear Filters Indicator */}
           {hasActiveFilters && (
             <div className="flex items-center justify-between pt-1 text-[11px]">
               <span className="text-amber-800 font-semibold">Active filters applied</span>
@@ -855,7 +1027,6 @@ const Expenses: React.FC = () => {
         <div className="space-y-4 pt-1">
           {groupedByMonth.map(group => (
             <div key={group.monthKey} className="space-y-2">
-              {/* Month Header Banner */}
               <div className="flex items-center justify-between bg-slate-100/80 px-3.5 py-1.5 rounded-lg border border-borderLight text-xs font-bold text-slate-800">
                 <span>{group.monthKey}</span>
                 <div className="flex items-center space-x-3 text-[11px]">
@@ -868,12 +1039,14 @@ const Expenses: React.FC = () => {
                 </div>
               </div>
 
-              {/* Transactions in this month */}
               <div className="space-y-2">
                 {group.items.map(tx => {
                   const isExpense = tx.type === 'EXPENSE';
                   const displayTitle = tx.label || tx.categoryId;
-                  const hasCustomLabel = tx.label && tx.label.trim().toLowerCase() !== tx.categoryId.trim().toLowerCase();
+                  const isDebtRecovery = tx.cashflowCategory === 'DEBT_RECOVERY_PRINCIPAL' || tx.incomeType === 'DEBT_RECOVERY';
+                  const isBorrowing = tx.cashflowCategory === 'DEBT_INFLOW_BORROWED';
+                  const isLoanGiven = tx.cashflowCategory === 'LOAN_GIVEN_OUTFLOW';
+                  const isDebtRepaid = tx.cashflowCategory === 'DEBT_REPAYMENT_OUTFLOW';
 
                   return (
                     <div 
@@ -881,46 +1054,60 @@ const Expenses: React.FC = () => {
                       className="p-3 bg-surface rounded-xl border border-borderLight shadow-2xs hover:shadow-sm transition-all flex items-center justify-between"
                     >
                       <div className="flex items-center space-x-3 min-w-0">
-                        {/* Type Icon */}
                         <div className={cn(
                           "w-9 h-9 rounded-full flex items-center justify-center shrink-0",
                           isExpense 
                             ? "bg-red-50 text-red-600" 
-                            : tx.incomeType === 'DEBT_RECOVERY'
+                            : isDebtRecovery
                               ? "bg-amber-50 text-amber-700"
-                              : "bg-green-50 text-green-600"
+                              : isBorrowing
+                                ? "bg-blue-50 text-blue-700"
+                                : "bg-green-50 text-green-600"
                         )}>
                           {isExpense ? (
-                            <ArrowDownRight size={18} />
-                          ) : tx.incomeType === 'DEBT_RECOVERY' ? (
+                            isLoanGiven ? <Send size={16} /> : isDebtRepaid ? <CreditCard size={16} /> : <ArrowDownRight size={18} />
+                          ) : isDebtRecovery ? (
                             <HandCoins size={17} />
+                          ) : isBorrowing ? (
+                            <Landmark size={16} />
                           ) : (
                             <ArrowUpRight size={18} />
                           )}
                         </div>
 
-                        {/* Title, Category & Timestamp */}
                         <div className="min-w-0">
                           <div className="flex items-center space-x-2 flex-wrap">
                             <span className="font-bold text-sm text-textMain truncate max-w-[130px] sm:max-w-[200px]">
                               {displayTitle}
                             </span>
 
-                            {tx.type === 'INCOME' && tx.incomeType === 'DEBT_RECOVERY' && (
+                            {isDebtRecovery && (
                               <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.2 rounded-full border border-amber-200 shrink-0">
-                                🤝 Debt Recovery {tx.debtorName ? `(${tx.debtorName})` : ''}
+                                🤝 Recovered {tx.debtorName ? `(${tx.debtorName})` : ''}
                               </span>
                             )}
 
-                            {tx.type === 'INCOME' && tx.incomeType !== 'DEBT_RECOVERY' && (
+                            {isBorrowing && (
+                              <span className="text-[10px] bg-blue-100 text-blue-900 font-bold px-2 py-0.2 rounded-full border border-blue-200 shrink-0">
+                                🏦 Borrowed {tx.debtorName ? `(${tx.debtorName})` : ''}
+                              </span>
+                            )}
+
+                            {isLoanGiven && (
+                              <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.2 rounded-full border border-amber-200 shrink-0">
+                                🤝 Lent Out {tx.debtorName ? `(${tx.debtorName})` : ''}
+                              </span>
+                            )}
+
+                            {isDebtRepaid && (
+                              <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2 py-0.2 rounded-full border border-purple-200 shrink-0">
+                                💳 Repaid Loan {tx.debtorName ? `(${tx.debtorName})` : ''}
+                              </span>
+                            )}
+
+                            {!isDebtRecovery && !isBorrowing && tx.type === 'INCOME' && (
                               <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.2 rounded-full border border-emerald-200 shrink-0">
                                 💼 Earned
-                              </span>
-                            )}
-
-                            {hasCustomLabel && (
-                              <span className="text-[10px] bg-slate-100 text-slate-700 font-semibold px-2 py-0.2 rounded-full border border-slate-200 shrink-0">
-                                {tx.categoryId}
                               </span>
                             )}
                           </div>
@@ -939,7 +1126,6 @@ const Expenses: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Amount & Delete */}
                       <div className="flex items-center space-x-2 shrink-0">
                         <span className={cn(
                           "font-bold text-sm sm:text-base",
@@ -969,29 +1155,24 @@ const Expenses: React.FC = () => {
               <p className="text-sm font-semibold text-textMain">No transaction logs found</p>
               <p className="text-xs text-textMuted">
                 {hasActiveFilters 
-                  ? "Try clearing your search query or month/date filters above." 
+                  ? "Try clearing your search query or filters above." 
                   : "Add your first expense or income using the form above."}
               </p>
-              {hasActiveFilters && (
-                <button 
-                  type="button" 
-                  onClick={clearAllFilters}
-                  className="mt-2 px-3 py-1 bg-primary-50 text-primary-700 rounded-lg text-xs font-bold hover:bg-primary-100 cursor-pointer"
-                >
-                  Clear Filters
-                </button>
-              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Delete Transaction Confirmation Heads-Up Modal */}
+      {/* Delete Transaction Confirmation Modal */}
       <ConfirmDeleteModal
         isOpen={!!deleteTargetTx}
         title="Delete Transaction"
         itemName={deleteTargetTx ? `${deleteTargetTx.type === 'EXPENSE' ? '-' : '+'}₹${deleteTargetTx.amount.toLocaleString('en-IN')} (${deleteTargetTx.label || deleteTargetTx.categoryId})` : ''}
-        message="Are you sure you want to permanently delete this transaction from your history? This action cannot be undone."
+        message={
+          deleteTargetTx?.debtId 
+            ? "This transaction is linked to a loan in Debts. Deleting it will automatically restore the loan's balance. Are you sure?" 
+            : "Are you sure you want to permanently delete this transaction from your history?"
+        }
         onConfirm={async () => {
           if (deleteTargetTx) {
             await deleteTransaction(deleteTargetTx.id);

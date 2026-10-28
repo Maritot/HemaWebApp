@@ -36,6 +36,7 @@ import {
   deleteDebt,
   updateDebtStatus, 
   recordDebtPayment,
+  recordAtomicDebtPaymentAndCashflow,
   deleteDebtPayment,
   DebtRecordItem, 
   DebtPayment 
@@ -424,22 +425,17 @@ const Debts: React.FC = () => {
   const handleRecordPayment = async () => {
     if (!repaymentDebt || !payAmount || Number(payAmount) <= 0) return;
 
-    const pmt: DebtPayment = {
-      id: crypto.randomUUID(),
-      amount: Number(payAmount),
-      date: payDate ? new Date(payDate).getTime() : Date.now(),
-      mode: payMode,
-      notes: payNotes.trim() || undefined,
-      proofPhoto: proofPhoto || undefined,
-      location: coords ? {
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        accuracy: coords.accuracy
-      } : undefined,
-      timestampVerified: verifiedTimestamp || Date.now()
-    };
+    const safeDate = payDate ? new Date(payDate).getTime() : Date.now();
 
-    await recordDebtPayment(repaymentDebt.id, pmt);
+    await recordAtomicDebtPaymentAndCashflow({
+      debtId: repaymentDebt.id,
+      amount: Number(payAmount),
+      date: safeDate,
+      notes: payNotes.trim() || undefined,
+      paymentMode: payMode,
+      syncToCashflow: true
+    });
+
     // Reset repayment state
     setRepaymentDebt(null);
     setPayAmount('');

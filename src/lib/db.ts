@@ -68,6 +68,48 @@ export interface DebtRecordItem {
 
 export type IncomeClassification = 'REGULAR' | 'DEBT_RECOVERY';
 
+export type CashflowClassification = 
+  | 'EARNED_INCOME'           // Salary, business net profit
+  | 'ASSET_PROFIT'            // Rental income, dividends, harvest proceeds
+  | 'DEBT_INTEREST_RECEIVED'  // Vaddi/interest earned from lending
+  | 'DEBT_RECOVERY_PRINCIPAL' // Debtor repaid principal (Asset recovery)
+  | 'DEBT_INFLOW_BORROWED'    // Loan taken from external party (Liability)
+  | 'LIVING_EXPENSE'          // Daily life, food, fuel, bills
+  | 'DEBT_INTEREST_PAID'      // Vaddi/interest paid to creditor
+  | 'LOAN_GIVEN_OUTFLOW'      // Money lent to someone (Loan asset created)
+  | 'DEBT_REPAYMENT_OUTFLOW'; // Principal repaid on loans taken (Liability reduced)
+
+export const MAX_CLOCK_SKEW_MS = 5000;
+
+export function validateTimestampInvariant(timestamp: number): number {
+  const now = Date.now();
+  if (typeof timestamp !== 'number' || isNaN(timestamp) || timestamp <= 0) {
+    return now;
+  }
+  if (timestamp > now + MAX_CLOCK_SKEW_MS) {
+    return now; // Clamps to current time
+  }
+  return timestamp;
+}
+
+export type AssetCategory = 'REAL_ESTATE' | 'GOLD_SILVER' | 'FINANCIAL' | 'VEHICLE' | 'OTHER';
+
+export interface AssetRecord {
+  id: string;
+  userId?: string;
+  name: string;
+  type: AssetCategory;
+  purchaseValue: number;
+  currentValue: number;
+  quantity: number;
+  unit: string; // 'Grams' | 'Tolas' | 'Acres' | 'Guntas' | 'Sq. Yards' | 'Units' | 'Items'
+  locationOrLocker?: string;
+  notes?: string;
+  dateAcquired: string; // YYYY-MM-DD
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface TransactionRecord {
   id: string;
   userId?: string;
@@ -76,6 +118,7 @@ export interface TransactionRecord {
   label?: string;
   type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
   incomeType?: IncomeClassification;
+  cashflowCategory?: CashflowClassification;
   debtId?: string;
   debtorName?: string;
   date: number;
@@ -113,6 +156,15 @@ export interface HemaDB extends DBSchema {
     value: DebtRecordItem;
     indexes: { 
       'by-status': string;
+      'by-user'?: string;
+    };
+  };
+  assets: {
+    key: string;
+    value: AssetRecord;
+    indexes: {
+      'by-type': string;
+      'by-date': string;
       'by-user'?: string;
     };
   };
@@ -158,7 +210,7 @@ export const initDB = (explicitUserId?: string) => {
 
   if (!dbPromise || currentActiveUserId !== userId) {
     currentActiveUserId = userId;
-    dbPromise = openDB<HemaDB>(dbName, 5, {
+    dbPromise = openDB<HemaDB>(dbName, 6, {
       upgrade(db, oldVersion, newVersion, transaction) {
         if (!db.objectStoreNames.contains('transactions')) {
           const txStore = db.createObjectStore('transactions', { keyPath: 'id' });
@@ -184,6 +236,12 @@ export const initDB = (explicitUserId?: string) => {
         if (!db.objectStoreNames.contains('people')) {
           const peopleStore = db.createObjectStore('people', { keyPath: 'id' });
           peopleStore.createIndex('by-name', 'name');
+        }
+
+        if (!db.objectStoreNames.contains('assets')) {
+          const assetStore = db.createObjectStore('assets', { keyPath: 'id' });
+          assetStore.createIndex('by-type', 'type');
+          assetStore.createIndex('by-date', 'dateAcquired');
         }
       },
     });
@@ -380,7 +438,8 @@ const deleteLocalPerson = (id: string) => {
 // --- Transactions (Strict User Isolation) ---
 export const addTransaction = async (tx: HemaDB['transactions']['value']) => {
   const db = await initDB();
-  const safeTx = { ...tx, userId: getActiveUserId() };
+  const safeDate = validateTimestampInvariant(tx.date);
+  const safeTx = { ...tx, date: safeDate, userId: getActiveUserId() };
   await db.put('transactions', safeTx);
 };
 
@@ -396,6 +455,26 @@ export const getTransactions = async () => {
 
 export const deleteTransaction = async (id: string) => {
   const db = await initDB();
+  const existing = await db.get('transactions', id);
+  if (existing?.debtId) {
+    try {
+      const debt = await db.get('debts', existing.debtId);
+      if (debt) {
+        const remainingPayments = (debt.payments || []).filter(
+          p => p.id !== existing.id && p.notes !== `Linked to tx: ${existing.id}`
+        );
+        debt.payments = remainingPayments;
+        const totalPaid = remainingPayments.reduce((s, p) => s + p.amount, 0);
+        const originalTarget = (debt.amount || debt.principalAmount || 0) + (debt.interestAmount || 0);
+        if (totalPaid < originalTarget) {
+          debt.status = 'PENDING';
+        }
+        await db.put('debts', debt);
+      }
+    } catch (e) {
+      console.warn('Could not auto-reverse debt on transaction delete:', e);
+    }
+  }
   await db.delete('transactions', id);
 };
 
@@ -584,6 +663,111 @@ export const deleteDebtPayment = async (debtId: string, paymentId: string) => {
   }
 };
 
+/**
+ * Atomic Bidirectional Sync between Debts and Cash Movements:
+ * Records payment against a debt and atomically logs it in the cash ledger.
+ */
+export const recordAtomicDebtPaymentAndCashflow = async (options: {
+  debtId: string;
+  amount: number;
+  date: number;
+  notes?: string;
+  paymentMode?: string;
+  syncToCashflow?: boolean;
+}) => {
+  const db = await initDB();
+  const safeDate = validateTimestampInvariant(options.date);
+  const debt = await db.get('debts', options.debtId);
+  if (!debt) throw new Error('Debt record not found');
+
+  const pmtId = crypto.randomUUID();
+  const payment: DebtPayment = {
+    id: pmtId,
+    amount: options.amount,
+    date: safeDate,
+    mode: options.paymentMode || 'Cash',
+    notes: options.notes || 'Recorded via Khata',
+    timestampVerified: safeDate
+  };
+
+  const payments = debt.payments || [];
+  payments.push(payment);
+  debt.payments = payments;
+
+  const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+  const targetAmount = (debt.amount || debt.principalAmount || 0) + (debt.interestAmount || 0);
+
+  if (totalPaid >= targetAmount) {
+    debt.status = 'SETTLED';
+  }
+
+  await db.put('debts', debt);
+
+  // If syncToCashflow is true, log to transactions
+  if (options.syncToCashflow !== false) {
+    const isIncoming = debt.type === 'OWED_TO_US'; // Debtor returned money to us
+    const txRecord: TransactionRecord = {
+      id: pmtId,
+      userId: getActiveUserId(),
+      amount: options.amount,
+      categoryId: isIncoming ? 'Debt Recovery' : 'Debt Repayment',
+      label: isIncoming ? `Repayment from ${debt.person}` : `Payment to ${debt.person}`,
+      type: isIncoming ? 'INCOME' : 'EXPENSE',
+      incomeType: isIncoming ? 'DEBT_RECOVERY' : undefined,
+      cashflowCategory: isIncoming ? 'DEBT_RECOVERY_PRINCIPAL' : 'DEBT_REPAYMENT_OUTFLOW',
+      debtId: debt.id,
+      debtorName: debt.person,
+      date: safeDate,
+      notes: options.notes ? `Khata: ${options.notes}` : `Khata payment: ${debt.person}`
+    };
+    await db.put('transactions', txRecord);
+  }
+
+  return { debt, pmtId };
+};
+
+// --- Secret Asset Vault (Strict User Isolation) ---
+export const getAssets = async (): Promise<AssetRecord[]> => {
+  const db = await initDB();
+  if (!db.objectStoreNames.contains('assets')) return [];
+  const assets = await db.getAll('assets');
+  const userId = getActiveUserId();
+  if (userId === 'default_user') {
+    return assets.filter(a => !a.userId || a.userId === 'default_user');
+  }
+  return assets.filter(a => a.userId === userId);
+};
+
+export const addAsset = async (asset: Omit<AssetRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<AssetRecord> => {
+  const db = await initDB();
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const record: AssetRecord = {
+    ...asset,
+    id,
+    userId: getActiveUserId(),
+    createdAt: now,
+    updatedAt: now
+  };
+  await db.put('assets', record);
+  return record;
+};
+
+export const updateAsset = async (asset: AssetRecord): Promise<void> => {
+  const db = await initDB();
+  const record: AssetRecord = {
+    ...asset,
+    userId: getActiveUserId(),
+    updatedAt: Date.now()
+  };
+  await db.put('assets', record);
+};
+
+export const deleteAsset = async (id: string): Promise<void> => {
+  const db = await initDB();
+  await db.delete('assets', id);
+};
+
 // --- Full JSON Backup & Restore (Scoped strictly to Active User) ---
 export interface HemaBackupPayload {
   version: number;
@@ -593,25 +777,28 @@ export interface HemaBackupPayload {
   people: PersonRecord[];
   gifts: GiftTransaction[];
   debts: DebtRecordItem[];
+  assets?: AssetRecord[];
 }
 
 export const exportFullBackup = async (): Promise<HemaBackupPayload> => {
   const userId = getActiveUserId();
-  const [transactions, people, gifts, debts] = await Promise.all([
+  const [transactions, people, gifts, debts, assets] = await Promise.all([
     getTransactions(),
     getPeople(),
     getGifts(),
-    getDebts()
+    getDebts(),
+    getAssets()
   ]);
 
   return {
-    version: 5,
+    version: 6,
     exportedAt: new Date().toISOString(),
     userId,
     transactions,
     people,
     gifts,
-    debts
+    debts,
+    assets
   };
 };
 
@@ -648,6 +835,13 @@ export const restoreFullBackup = async (payload: HemaBackupPayload): Promise<boo
   if (Array.isArray(payload.debts)) {
     for (const d of payload.debts) {
       if (d.id) await db.put('debts', { ...d, userId });
+    }
+  }
+
+  // Restore assets
+  if (Array.isArray(payload.assets)) {
+    for (const a of payload.assets) {
+      if (a.id) await db.put('assets', { ...a, userId });
     }
   }
 
