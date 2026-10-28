@@ -48,7 +48,8 @@ import { exportAndSaveFile } from '@/lib/nativeFiles';
 import { 
   requestNotificationPermission as requestNativeNotifPermission, 
   triggerSystemNotification, 
-  checkNotificationPermission 
+  checkNotificationPermission,
+  checkAndNotifyDueDebts 
 } from '@/lib/notifications';
 import { useAuth } from '@/context/AuthContext';
 import { 
@@ -329,13 +330,13 @@ const Settings: React.FC = () => {
           { id: 'tx_sample_04', amount: 1800, categoryId: 'Transport', label: 'Petrol Refill', type: 'EXPENSE', date: Date.now() - 1 * 86400000, notes: 'Two-wheeler fuel' }
         ],
         people: [
-          { id: 'person_sample_01', name: 'Ramesh Uncle', relationship: 'Uncle', phone: '+91 98765 43210', notes: 'Tirupati Family Elder', createdAt: Date.now() - 30 * 86400000 },
+          { id: 'person_sample_01', name: 'Elder Relative', relationship: 'Relative', phone: '+91 98765 43210', notes: 'Family Elder', createdAt: Date.now() - 30 * 86400000 },
           { id: 'person_sample_02', name: 'Suresh Cousin', relationship: 'Cousin', phone: '+91 98480 12345', notes: 'Family cousin', createdAt: Date.now() - 20 * 86400000 }
         ],
         debts: [
           {
             id: 'debt_sample_01',
-            person: 'Ramesh Uncle',
+            person: 'Elder Relative',
             principalAmount: 100000,
             amount: 160000,
             type: 'OWED_TO_US',
@@ -375,7 +376,7 @@ const Settings: React.FC = () => {
         gifts: [
           {
             id: 'gift_sample_01',
-            person: 'Ramesh Uncle',
+            person: 'Elder Relative',
             personId: 'person_sample_01',
             occasion: 'Wedding (विवाह / పెళ్లి)',
             type: 'RECEIVED',
@@ -498,14 +499,20 @@ const Settings: React.FC = () => {
   };
 
   const handleTestAlert = async () => {
-    const sent = await triggerSystemNotification({
-      title: 'Hema Urgent Loan Alert',
-      body: 'Reminder: Ramesh Uncle repayment of ₹10,000 is due in 3 days!'
-    });
-    if (sent) {
-      setInAppAlert('🔔 System notification sent to your device status bar outside the app!');
-    } else {
-      setInAppAlert('🔔 In-App Alert: Ramesh Uncle repayment of ₹10,000 is due in 3 days!');
+    try {
+      const allDebts = await getDebts();
+      const result = await checkAndNotifyDueDebts(allDebts, user?.name);
+      if (result.sentCount > 0) {
+        setInAppAlert(`🔔 Alert Sent: ${result.message}`);
+      } else {
+        setInAppAlert(`🔔 Status: ${result.message}`);
+      }
+    } catch (err: any) {
+      const sent = await triggerSystemNotification({
+        title: 'Hema Finance: Notification Test',
+        body: `Hello ${user?.name || 'Family Member'}, your device alerts are working perfectly!`
+      });
+      setInAppAlert(sent ? '🔔 Test notification dispatched to device status bar!' : '🔔 In-App Alert verified.');
     }
     setTimeout(() => setInAppAlert(null), 4500);
   };
@@ -554,10 +561,10 @@ const Settings: React.FC = () => {
             <div className="mt-3.5 pt-3 border-t border-amber-200/60 flex items-center justify-between text-[11px] text-slate-500">
               <span className="flex items-center space-x-1.5 truncate">
                 <Shield size={12} className="text-amber-600 shrink-0" />
-                <span className="font-semibold text-slate-700">Isolated Partition:</span>
-                <code className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-600 truncate">
-                  {user.id}
-                </code>
+                <span className="font-semibold text-slate-700">Storage Security:</span>
+                <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60 text-[10px]">
+                  Private Vault
+                </span>
               </span>
               <span className="text-[10px] text-emerald-700 font-bold flex items-center space-x-1 shrink-0">
                 <span>🔒 Strict Data Isolation</span>
@@ -579,7 +586,7 @@ const Settings: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-bold text-slate-900 text-sm">Cloud Sync & Multi-Device</h3>
-                <p className="text-[11px] text-slate-500">Supabase PostgreSQL with Row-Level Security</p>
+                <p className="text-[11px] text-slate-500">Secure Backup & Instant Device Sync</p>
               </div>
             </div>
 
@@ -624,7 +631,7 @@ const Settings: React.FC = () => {
                 className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg font-bold text-xs transition-colors flex items-center space-x-1 cursor-pointer"
               >
                 <SettingsIcon size={12} />
-                <span>{isCloudConfigured ? 'Configure' : 'Connect Cloud'}</span>
+                <span>{isCloudConfigured ? 'Cloud Settings' : 'Connect Cloud'}</span>
               </button>
             </div>
           </div>
@@ -978,104 +985,151 @@ const Settings: React.FC = () => {
               <div className="flex justify-between items-center mb-4 pb-2 border-b border-borderLight">
                 <div className="flex items-center space-x-2.5">
                   <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold">
-                    <Globe size={18} />
+                    <Cloud size={18} />
                   </div>
                   <div>
-                    <h3 className="font-bold text-textMain text-base">Supabase Cloud Database</h3>
-                    <p className="text-xs text-textMuted">PostgreSQL with Row-Level Security</p>
+                    <h3 className="font-bold text-textMain text-base">Cloud Backup & Device Sync</h3>
+                    <p className="text-xs text-textMuted">Keep data safe and synced across your devices</p>
                   </div>
                 </div>
-                <button onClick={() => setShowCloudModal(false)} className="text-textMuted hover:text-textMain p-1">
+                <button onClick={() => setShowCloudModal(false)} className="text-textMuted hover:text-textMain p-1 cursor-pointer">
                   <X size={18} />
                 </button>
               </div>
 
-              <form onSubmit={handleSaveCloudCredentials} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Supabase Project URL
-                  </label>
-                  <input
-                    type="url"
-                    required
-                    value={cloudUrl}
-                    onChange={e => setCloudUrl(e.target.value)}
-                    placeholder="https://your-project-id.supabase.co"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Supabase Public Anon Key
-                  </label>
-                  <textarea
-                    required
-                    rows={3}
-                    value={cloudKey}
-                    onChange={e => setCloudKey(e.target.value)}
-                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-
-                {testStatus && (
-                  <div className={`p-3 rounded-xl text-xs font-medium ${
-                    testStatus.testing 
-                      ? 'bg-blue-50 text-blue-700 border border-blue-200' 
-                      : testStatus.success 
-                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
-                        : 'bg-red-50 text-red-800 border border-red-200'
-                  }`}>
-                    {testStatus.testing ? 'Testing connection to Supabase...' : testStatus.message}
+              {/* Consumer Sync Status Overview */}
+              <div className="space-y-3 mb-4">
+                <div className={`p-3.5 rounded-2xl border text-xs ${
+                  isCloudConfigured 
+                    ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950' 
+                    : 'bg-amber-50/80 border-amber-200 text-amber-950'
+                }`}>
+                  <div className="flex items-center space-x-2 font-bold mb-1">
+                    {isCloudConfigured ? <CheckCircle2 size={16} className="text-emerald-600" /> : <Shield size={16} className="text-amber-600" />}
+                    <span>{isCloudConfigured ? 'Cloud Connection Active' : 'Offline Vault Mode Active'}</span>
                   </div>
-                )}
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleTestCloudConnection}
-                    disabled={!cloudUrl || !cloudKey || testStatus?.testing}
-                    className="flex-1 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition-colors cursor-pointer disabled:opacity-50"
-                  >
-                    Test Ping
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={!cloudUrl || !cloudKey}
-                    className="flex-1 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-                  >
-                    Save & Connect
-                  </button>
-                  {isCloudConfigured && (
-                    <button
-                      type="button"
-                      onClick={handleClearCloudCredentials}
-                      className="py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl font-bold text-xs transition-colors cursor-pointer"
-                    >
-                      Disconnect
-                    </button>
-                  )}
-                </div>
-
-                {/* SQL Schema 1-Click Copy */}
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-800 text-xs">Database Schema (SQL):</span>
-                    <button
-                      type="button"
-                      onClick={handleCopySchema}
-                      className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-bold text-[10px] flex items-center space-x-1 transition-colors cursor-pointer"
-                    >
-                      {copySuccess ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
-                      <span>{copySuccess ? 'Copied!' : 'Copy SQL Schema'}</span>
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Paste this SQL in your <strong>Supabase Dashboard → SQL Editor</strong> to create all tables with Row-Level Security policies.
+                  <p className="text-[11px] leading-relaxed opacity-90">
+                    {isCloudConfigured
+                      ? 'Your transactions, debts, and gifts are synced securely to your private account partition in real-time.'
+                      : 'All records are saved securely inside this phone’s encrypted offline storage. You can enable cloud backup below.'}
                   </p>
                 </div>
-              </form>
+
+                {isCloudConfigured && (
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={() => {
+                      handleManualSync();
+                      setShowCloudModal(false);
+                    }}
+                    className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+                    <span>Sync Entire Ledger Now</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Collapsible Advanced Developer Setup */}
+              <details className="border border-slate-200 rounded-2xl bg-slate-50 overflow-hidden text-xs">
+                <summary className="p-3.5 font-bold text-slate-700 cursor-pointer hover:bg-slate-100/80 flex items-center justify-between select-none">
+                  <div className="flex items-center space-x-2">
+                    <Database size={14} className="text-slate-500" />
+                    <span>Advanced Database & Cloud Settings</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-normal">Click to Expand</span>
+                </summary>
+
+                <div className="p-4 border-t border-slate-200 bg-white space-y-4">
+                  <form onSubmit={handleSaveCloudCredentials} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Supabase Project URL
+                      </label>
+                      <input
+                        type="url"
+                        required
+                        value={cloudUrl}
+                        onChange={e => setCloudUrl(e.target.value)}
+                        placeholder="https://your-project-id.supabase.co"
+                        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Supabase Public Anon Key
+                      </label>
+                      <textarea
+                        required
+                        rows={3}
+                        value={cloudKey}
+                        onChange={e => setCloudKey(e.target.value)}
+                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+
+                    {testStatus && (
+                      <div className={`p-3 rounded-xl text-xs font-medium ${
+                        testStatus.testing 
+                          ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                          : testStatus.success 
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
+                            : 'bg-red-50 text-red-800 border border-red-200'
+                      }`}>
+                        {testStatus.testing ? 'Testing connection to Supabase...' : testStatus.message}
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleTestCloudConnection}
+                        disabled={!cloudUrl || !cloudKey || testStatus?.testing}
+                        className="flex-1 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        Test Ping
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={!cloudUrl || !cloudKey}
+                        className="flex-1 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                      >
+                        Save & Connect
+                      </button>
+                      {isCloudConfigured && (
+                        <button
+                          type="button"
+                          onClick={handleClearCloudCredentials}
+                          className="py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl font-bold text-xs transition-colors cursor-pointer"
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </div>
+
+                    {/* SQL Schema 1-Click Copy */}
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-800 text-xs">Database Schema (SQL):</span>
+                        <button
+                          type="button"
+                          onClick={handleCopySchema}
+                          className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-bold text-[10px] flex items-center space-x-1 transition-colors cursor-pointer"
+                        >
+                          {copySuccess ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                          <span>{copySuccess ? 'Copied!' : 'Copy SQL Schema'}</span>
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Paste this SQL in your <strong>Supabase Dashboard → SQL Editor</strong> if configuring a custom project.
+                      </p>
+                    </div>
+                  </form>
+                </div>
+              </details>
             </CardContent>
           </Card>
         </div>,

@@ -118,9 +118,26 @@ const Dashboard: React.FC = () => {
     return list.slice(0, 10);
   }, [transactions, selectedCategory]);
 
-  const totalIncome = transactions.filter(t => t.type === 'INCOME').reduce((acc, t) => acc + t.amount, 0); 
+  const earnedIncome = useMemo(() => {
+    return transactions
+      .filter(t => t.type === 'INCOME' && t.incomeType !== 'DEBT_RECOVERY')
+      .reduce((acc, t) => acc + t.amount, 0);
+  }, [transactions]);
+
+  const debtRecovery = useMemo(() => {
+    return transactions
+      .filter(t => t.type === 'INCOME' && t.incomeType === 'DEBT_RECOVERY')
+      .reduce((acc, t) => acc + t.amount, 0);
+  }, [transactions]);
+
+  const totalIncome = earnedIncome + debtRecovery; 
   const totalExpense = transactions.filter(t => t.type === 'EXPENSE').reduce((acc, t) => acc + t.amount, 0); 
   const balance = totalIncome - totalExpense;
+
+  const spendRate = useMemo(() => {
+    if (earnedIncome <= 0) return totalExpense > 0 ? 100 : 0;
+    return Math.round((totalExpense / earnedIncome) * 100);
+  }, [earnedIncome, totalExpense]);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
@@ -132,18 +149,31 @@ const Dashboard: React.FC = () => {
           <div className="flex items-center space-x-1">
             <span className="text-3xl font-bold tracking-tight">₹{balance.toLocaleString('en-IN')}</span>
           </div>
-          <div className="mt-6 flex space-x-4">
+          <div className="mt-5 flex space-x-3">
             <div className="flex-1 bg-white/10 rounded-xl p-3 backdrop-blur-sm">
               <div className="flex items-center text-green-100 text-xs mb-1">
                 <ArrowUpRight size={14} className="mr-1"/> {t('dashboard.income')}
               </div>
-              <p className="font-semibold">₹{totalIncome.toLocaleString('en-IN')}</p>
+              <p className="font-semibold text-sm sm:text-base">₹{totalIncome.toLocaleString('en-IN')}</p>
+              {debtRecovery > 0 ? (
+                <div className="text-[10px] text-primary-100/90 mt-1 flex flex-col gap-0.5">
+                  <span>Earned: ₹{earnedIncome.toLocaleString('en-IN')}</span>
+                  <span>Recovered: ₹{debtRecovery.toLocaleString('en-IN')}</span>
+                </div>
+              ) : (
+                <div className="text-[10px] text-green-100/80 mt-1">
+                  <span>100% Earned Revenue</span>
+                </div>
+              )}
             </div>
             <div className="flex-1 bg-white/10 rounded-xl p-3 backdrop-blur-sm">
               <div className="flex items-center text-red-100 text-xs mb-1">
                 <ArrowDownRight size={14} className="mr-1"/> {t('dashboard.expenses')}
               </div>
-              <p className="font-semibold">₹{totalExpense.toLocaleString('en-IN')}</p>
+              <p className="font-semibold text-sm sm:text-base">₹{totalExpense.toLocaleString('en-IN')}</p>
+              <div className="text-[10px] text-red-100/90 mt-1">
+                <span>Spend Rate: <strong>{earnedIncome > 0 ? `${spendRate}%` : (totalExpense > 0 ? '100%+' : '0%')}</strong></span>
+              </div>
             </div>
           </div>
         </CardContent>

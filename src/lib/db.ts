@@ -66,19 +66,26 @@ export interface DebtRecordItem {
   payments?: DebtPayment[]; // Partial repayments logged
 }
 
+export type IncomeClassification = 'REGULAR' | 'DEBT_RECOVERY';
+
+export interface TransactionRecord {
+  id: string;
+  userId?: string;
+  amount: number;
+  categoryId: string;
+  label?: string;
+  type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
+  incomeType?: IncomeClassification;
+  debtId?: string;
+  debtorName?: string;
+  date: number;
+  notes: string;
+}
+
 export interface HemaDB extends DBSchema {
   transactions: {
     key: string;
-    value: {
-      id: string;
-      userId?: string;
-      amount: number;
-      categoryId: string;
-      label?: string;
-      type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
-      date: number;
-      notes: string;
-    };
+    value: TransactionRecord;
     indexes: { 
       'by-date': number;
       'by-user'?: string;
