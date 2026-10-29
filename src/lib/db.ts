@@ -92,24 +92,6 @@ export function validateTimestampInvariant(timestamp: number): number {
   return timestamp;
 }
 
-export type AssetCategory = 'REAL_ESTATE' | 'GOLD_SILVER' | 'FINANCIAL' | 'VEHICLE' | 'OTHER';
-
-export interface AssetRecord {
-  id: string;
-  userId?: string;
-  name: string;
-  type: AssetCategory;
-  purchaseValue: number;
-  currentValue: number;
-  quantity: number;
-  unit: string; // 'Grams' | 'Tolas' | 'Acres' | 'Guntas' | 'Sq. Yards' | 'Units' | 'Items'
-  locationOrLocker?: string;
-  notes?: string;
-  dateAcquired: string; // YYYY-MM-DD
-  createdAt: number;
-  updatedAt: number;
-}
-
 export interface TransactionRecord {
   id: string;
   userId?: string;
@@ -156,15 +138,6 @@ export interface HemaDB extends DBSchema {
     value: DebtRecordItem;
     indexes: { 
       'by-status': string;
-      'by-user'?: string;
-    };
-  };
-  assets: {
-    key: string;
-    value: AssetRecord;
-    indexes: {
-      'by-type': string;
-      'by-date': string;
       'by-user'?: string;
     };
   };
@@ -236,12 +209,6 @@ export const initDB = (explicitUserId?: string) => {
         if (!db.objectStoreNames.contains('people')) {
           const peopleStore = db.createObjectStore('people', { keyPath: 'id' });
           peopleStore.createIndex('by-name', 'name');
-        }
-
-        if (!db.objectStoreNames.contains('assets')) {
-          const assetStore = db.createObjectStore('assets', { keyPath: 'id' });
-          assetStore.createIndex('by-type', 'type');
-          assetStore.createIndex('by-date', 'dateAcquired');
         }
       },
     });
@@ -726,48 +693,6 @@ export const recordAtomicDebtPaymentAndCashflow = async (options: {
   return { debt, pmtId };
 };
 
-// --- Secret Asset Vault (Strict User Isolation) ---
-export const getAssets = async (): Promise<AssetRecord[]> => {
-  const db = await initDB();
-  if (!db.objectStoreNames.contains('assets')) return [];
-  const assets = await db.getAll('assets');
-  const userId = getActiveUserId();
-  if (userId === 'default_user') {
-    return assets.filter(a => !a.userId || a.userId === 'default_user');
-  }
-  return assets.filter(a => a.userId === userId);
-};
-
-export const addAsset = async (asset: Omit<AssetRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<AssetRecord> => {
-  const db = await initDB();
-  const id = crypto.randomUUID();
-  const now = Date.now();
-  const record: AssetRecord = {
-    ...asset,
-    id,
-    userId: getActiveUserId(),
-    createdAt: now,
-    updatedAt: now
-  };
-  await db.put('assets', record);
-  return record;
-};
-
-export const updateAsset = async (asset: AssetRecord): Promise<void> => {
-  const db = await initDB();
-  const record: AssetRecord = {
-    ...asset,
-    userId: getActiveUserId(),
-    updatedAt: Date.now()
-  };
-  await db.put('assets', record);
-};
-
-export const deleteAsset = async (id: string): Promise<void> => {
-  const db = await initDB();
-  await db.delete('assets', id);
-};
-
 // --- Full JSON Backup & Restore (Scoped strictly to Active User) ---
 export interface HemaBackupPayload {
   version: number;
@@ -777,17 +702,15 @@ export interface HemaBackupPayload {
   people: PersonRecord[];
   gifts: GiftTransaction[];
   debts: DebtRecordItem[];
-  assets?: AssetRecord[];
 }
 
 export const exportFullBackup = async (): Promise<HemaBackupPayload> => {
   const userId = getActiveUserId();
-  const [transactions, people, gifts, debts, assets] = await Promise.all([
+  const [transactions, people, gifts, debts] = await Promise.all([
     getTransactions(),
     getPeople(),
     getGifts(),
-    getDebts(),
-    getAssets()
+    getDebts()
   ]);
 
   return {
@@ -797,8 +720,7 @@ export const exportFullBackup = async (): Promise<HemaBackupPayload> => {
     transactions,
     people,
     gifts,
-    debts,
-    assets
+    debts
   };
 };
 
@@ -835,13 +757,6 @@ export const restoreFullBackup = async (payload: HemaBackupPayload): Promise<boo
   if (Array.isArray(payload.debts)) {
     for (const d of payload.debts) {
       if (d.id) await db.put('debts', { ...d, userId });
-    }
-  }
-
-  // Restore assets
-  if (Array.isArray(payload.assets)) {
-    for (const a of payload.assets) {
-      if (a.id) await db.put('assets', { ...a, userId });
     }
   }
 
